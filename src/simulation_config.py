@@ -25,8 +25,7 @@ DEFAULT_SIMULATION: dict[str, Any] = {
     "losses_pct": {
         "grid_to_battery": 7.5,
         "battery_to_load_or_grid": 7.5,
-        # AC PV surplus → BMS SOC (calibrated to evening meter ΔSOC / surplus).
-        "pv_to_battery": 25.0,
+        "pv_to_battery": 7.5,
         "pv_to_grid": 7.5,
         "pv_to_load": 7.5,
     },
@@ -96,6 +95,25 @@ def plan_timer_charge_grid_kw(cfg: dict[str, Any]) -> float:
     if eta_grid <= 0:
         return dc_kw
     return round(dc_kw / float(eta_grid), 2)
+
+
+def simulation_form_defaults() -> dict[str, float | int]:
+    """Flat Configuration-form defaults (HTML inputs and JS populateForm)."""
+    losses = DEFAULT_SIMULATION["losses_pct"]
+    return {
+        "simulation.min_soc_pct": int(DEFAULT_SIMULATION["min_soc_pct"]),
+        "simulation.losses_pct.pv_to_battery": float(losses["pv_to_battery"]),
+        "simulation.losses_pct.grid_to_battery": float(losses["grid_to_battery"]),
+        "simulation.losses_pct.battery_to_load_or_grid": float(losses["battery_to_load_or_grid"]),
+        "simulation.losses_pct.pv_to_grid": float(losses["pv_to_grid"]),
+        "simulation.losses_pct.pv_to_load": float(losses["pv_to_load"]),
+        "timer_schedule.min_block_minutes": int(DEFAULT_TIMER_SCHEDULE["min_block_minutes"]),
+        "timer_schedule.min_hourly_transfer_kwh": float(
+            DEFAULT_TIMER_SCHEDULE["min_hourly_transfer_kwh"]
+        ),
+        "battery.max_charge_power_kw": float(DEFAULT_BATTERY_MAX_CHARGE_POWER_KW),
+        "battery.max_discharge_power_kw": float(DEFAULT_BATTERY_MAX_DISCHARGE_POWER_KW),
+    }
 
 
 def merge_timer_schedule_defaults(cfg: dict[str, Any]) -> dict[str, Any]:

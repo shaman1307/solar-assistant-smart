@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.plan_optimizer import (
     HourControl,
-    _plan_hour_battery_grid_export_claim,
+    plan_hour_battery_grid_export_claim,
     export_span_candidates,
     export_window_roles,
     plan_battery_grid_export,
@@ -37,7 +37,7 @@ def _claim_kwargs(**extra):
 def test_declining_rce_thin_soc_does_not_charge_then_dump_late():
     """Thin SOC must not yield Dis 09:30-10:00 via PV charge banking."""
     rce_q = [0.78, 0.75, 0.63, 0.54]
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=9,
         role="single",
         soc0=10.5,
@@ -55,7 +55,7 @@ def test_declining_rce_single_prefers_first_half_not_late_trim():
     rce_q = [0.78, 0.75, 0.63, 0.54]
     # PV surplus early — old trim path parked Dis on the cheap tail.
     pv_q = [0.86, 0.86, 0.86, 0.86]
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=9,
         role="single",
         soc0=12.0,
@@ -71,7 +71,7 @@ def test_declining_rce_single_prefers_first_half_not_late_trim():
 def test_rising_rce_single_prefers_rich_tail():
     """Partial single-hour window should sit on the expensive late quarters."""
     rce_q = [1.27, 1.50, 1.77, 2.37]
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=19,
         role="single",
         soc0=11.5,  # thin above min — partial hour only
@@ -91,7 +91,7 @@ def test_last_role_still_must_start_at_hour_start():
     """Multi-hour continuity: last hour of a run cannot start mid-hour."""
     assert export_span_candidates("last") == [(0, 4), (0, 3), (0, 2)]
     rce_q = [1.27, 1.50, 1.77, 2.37]
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=21,
         role="last",
         soc0=11.5,
@@ -108,7 +108,7 @@ def test_middle_role_still_full_hour_only():
     roles = export_window_roles({19, 20, 21})
     assert roles[20] == "middle"
     rce_q = [1.7, 1.8, 1.6, 1.5]
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=20,
         role="middle",
         soc0=30.0,

@@ -108,7 +108,7 @@ def test_replay_charge_timer_soc_matches_kwh():
 
 def test_grid_charge_with_load_priority():
     """30 min @ 5 kW charge; 5.5 kWh house from battery → import ≈ charge/η only."""
-    from src.debug_smart_plan import build_smart_plan_hour_row
+    from src.plan_q15 import build_smart_plan_hour_row
     from src.plan_timer_override import replay_day_plan_with_timer_overrides
 
     cfg = {

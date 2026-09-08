@@ -10,7 +10,7 @@ from .plan_cost import (
     derive_grid_flows_from_balance,
     hour_meter_cash_pln,
 )
-from .inverter_sim import _initial_soc_kwh
+from .inverter_sim import resolve_hour0_soc_kwh
 from .timer_plan import build_hour_timer_schedule, classify_action
 
 SLOTS_PER_HOUR_10M = 6
@@ -169,7 +169,7 @@ def hour_start_soc_kwh(
         # Backtrack only when hour-0 SOC exists; otherwise return None.
         if not soc_series or soc_series[0] is None:
             return None
-        start_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+        start_kwh, _ = resolve_hour0_soc_kwh(hourly, battery_cap)
         return start_kwh
 
     prev_pct = soc_series[hour - 1] if hour - 1 < len(soc_series) else None
@@ -535,7 +535,7 @@ def _elapsed_kwh_through_quarter(
     return _ten_min_energy_kwh(series, hour, 0, SLOTS_PER_HOUR_10M)
 
 
-def _actual_q15_slice_kwh(
+def actual_q15_slice_kwh(
     series: list[float | None] | None,
     hour: int,
     q: int,
@@ -728,7 +728,7 @@ def _blended_q15_slot_kwh(
     pull = _refresh_slot_index(now, hour)
 
     if freeze_through >= 0 and q <= freeze_through:
-        return _actual_q15_slice_kwh(series, hour, q)
+        return actual_q15_slice_kwh(series, hour, q)
 
     if pull >= 0 and q == pull:
         return _open_quarter_blend_kwh(series, hour, q, forecast)
@@ -796,18 +796,18 @@ def _actual_q15_battery_grid(
         => battery_delta = PV - load + grid_import - grid_export
     """
     s = series_10min or {}
-    bat_in = _actual_q15_slice_kwh(s.get("bat_charge"), hour, q)
-    bat_out = _actual_q15_slice_kwh(s.get("bat_discharge"), hour, q)
-    grid_import = _actual_q15_slice_kwh(
+    bat_in = actual_q15_slice_kwh(s.get("bat_charge"), hour, q)
+    bat_out = actual_q15_slice_kwh(s.get("bat_discharge"), hour, q)
+    grid_import = actual_q15_slice_kwh(
         s.get("grid_buy"), hour, q, grid_mode="import",
     )
-    grid_export = _actual_q15_slice_kwh(
+    grid_export = actual_q15_slice_kwh(
         s.get("grid_sell"), hour, q, grid_mode="export",
     )
     bat_delta = bat_in - bat_out
     if abs(bat_delta) < 1e-6:
-        pv = _actual_q15_slice_kwh(s.get("pv"), hour, q)
-        load = _actual_q15_slice_kwh(s.get("load"), hour, q)
+        pv = actual_q15_slice_kwh(s.get("pv"), hour, q)
+        load = actual_q15_slice_kwh(s.get("load"), hour, q)
         if (
             abs(pv) > 1e-6
             or abs(load) > 1e-6

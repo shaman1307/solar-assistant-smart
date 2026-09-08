@@ -456,9 +456,9 @@ def _hour_timer_segment(
 
     duration_min = to_min - from_min
     if target_action == ACTION_CHARGE_GRID:
-        power_kw = _infer_charge_timer_power_kw(total_kwh, duration_min, cfg)
+        power_kw = infer_charge_timer_power_kw(total_kwh, duration_min, cfg)
     else:
-        power_kw = _infer_discharge_timer_power_kw(
+        power_kw = infer_discharge_timer_power_kw(
             total_kwh,
             duration_min,
             cfg,
@@ -488,7 +488,7 @@ def _hour_timer_segment(
                     )
             except (TypeError, ValueError, KeyError):
                 pass
-        cap = max(min_soc, _discharge_cap_pct_from_row(slot_for_cap, min_soc))
+        cap = max(min_soc, discharge_cap_pct_from_row(slot_for_cap, min_soc))
     return f"{prefix} {_min_to_hhmm(from_min)}-{_min_to_hhmm(to_min)} {power_kw}kW cap{cap}%"
 
 
@@ -515,7 +515,7 @@ def _fallback_charge_grid_timer(
     if totals["bat_charge"] <= epsilon:
         return ""
     hour_start = hour * 60
-    power_kw = _infer_charge_timer_power_kw(totals["bat_charge"], 60, cfg)
+    power_kw = infer_charge_timer_power_kw(totals["bat_charge"], 60, cfg)
     cap = _charge_timer_cap_pct(slots, cfg) if slots else 80
     return (
         f"Chg {_min_to_hhmm(hour_start)}-{_min_to_hhmm(hour_start + 60)} "
@@ -630,7 +630,7 @@ def _minute_of_day_from_start(row: dict) -> int:
     return int(parts[0]) * 60 + int(parts[1])
 
 
-def _discharge_cap_pct_from_row(row: dict[str, Any], fallback: float) -> int:
+def discharge_cap_pct_from_row(row: dict[str, Any], fallback: float) -> int:
     """SA Dis stop %: overnight survive reserve at this slot, else planned SOC.
 
     Ceil fractional reserve so the inverter never stops below the modeled floor
@@ -651,7 +651,7 @@ def _discharge_cap_pct_from_row(row: dict[str, Any], fallback: float) -> int:
         return max(0, int(math.ceil(float(fallback) - 1e-9)))
 
 
-def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, Any]]:
+def merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, Any]]:
     """Merge consecutive 15-minute rows into timer blocks (HH:MM boundaries)."""
     blocks: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -687,14 +687,14 @@ def _merge_blocks_q15(rows: list[dict], target_action: str) -> list[dict[str, An
                 current["export_kwh"] = float(current.get("export_kwh", 0.0)) + export_kwh
                 current["load_kwh"] = float(current.get("load_kwh", 0.0)) + load_kwh
                 current["pv_kwh"] = float(current.get("pv_kwh", 0.0)) + pv_kwh
-                current["capacity_pct"] = _discharge_cap_pct_from_row(row, current["capacity_pct"])
+                current["capacity_pct"] = discharge_cap_pct_from_row(row, current["capacity_pct"])
             else:
                 current["capacity_pct"] = round(float(row.get("soc", current["capacity_pct"])), 0)
         else:
             if current:
                 blocks.append(current)
             if target_action == ACTION_DISCHARGE_GRID:
-                cap = _discharge_cap_pct_from_row(row, 80)
+                cap = discharge_cap_pct_from_row(row, 80)
             else:
                 cap = round(float(row.get("soc", 80)), 0)
             current = {
@@ -730,7 +730,7 @@ def _slot_pv_kwh(slot: dict[str, Any]) -> float:
     return 0.0
 
 
-def _infer_charge_timer_power_kw(
+def infer_charge_timer_power_kw(
     charge_kwh: float,
     duration_min: int,
     cfg: dict,
@@ -756,7 +756,7 @@ def _infer_charge_timer_power_kw(
     return round(max(stepped, 0.5), 1)
 
 
-def _infer_discharge_timer_power_kw(
+def infer_discharge_timer_power_kw(
     export_kwh: float,
     duration_min: int,
     cfg: dict,
@@ -799,7 +799,7 @@ def _min_to_hhmm(total_min: int) -> str:
     return f"{total_min // 60:02d}:{total_min % 60:02d}"
 
 
-def _blocks_q15_to_slots(
+def blocks_q15_to_slots(
     blocks: list[dict[str, Any]],
     kind: str,
     templates: list[dict[str, Any]],
@@ -821,7 +821,7 @@ def _blocks_q15_to_slots(
             timer_kw = charge_kw
         else:
             dur = max(1, int(blk["to_min"] - blk["from_min"]))
-            timer_kw = _infer_discharge_timer_power_kw(
+            timer_kw = infer_discharge_timer_power_kw(
                 float(blk.get("export_kwh") or 0.0),
                 dur,
                 cfg,
@@ -913,8 +913,8 @@ def derive_timer_schedule_q15(
 ) -> dict[str, Any]:
     existing = existing or {}
     min_block = plan_timer_min_block_minutes(cfg)
-    charge_merged = _merge_blocks_q15(rows, ACTION_CHARGE_GRID)
-    discharge_merged = _merge_blocks_q15(rows, ACTION_DISCHARGE_GRID)
+    charge_merged = merge_blocks_q15(rows, ACTION_CHARGE_GRID)
+    discharge_merged = merge_blocks_q15(rows, ACTION_DISCHARGE_GRID)
     charge_blocks = _filter_min_duration_blocks(
         _remerge_overlapping_blocks(
             _extend_blocks_to_min_duration(
@@ -935,8 +935,8 @@ def derive_timer_schedule_q15(
     return {
         "timed_charge_enabled": bool(charge_blocks),
         "timed_discharge_enabled": bool(discharge_blocks),
-        "charge_slots": _blocks_q15_to_slots(charge_blocks, "charge", existing.get("charge_slots", []), cfg),
-        "discharge_slots": _blocks_q15_to_slots(
+        "charge_slots": blocks_q15_to_slots(charge_blocks, "charge", existing.get("charge_slots", []), cfg),
+        "discharge_slots": blocks_q15_to_slots(
             discharge_blocks, "discharge", existing.get("discharge_slots", []), cfg
         ),
     }
@@ -1572,7 +1572,7 @@ def build_hourly_schedule(
     elif action == ACTION_DISCHARGE_GRID and row:
         timed_discharge = True
         tpl = discharge_slots[0]
-        dis_cap = _discharge_cap_pct_from_row(row, min_soc)
+        dis_cap = discharge_cap_pct_from_row(row, min_soc)
         discharge_slots[0] = {
             "slot": 1,
             "from": f"{from_h:02d}:00",

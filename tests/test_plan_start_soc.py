@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from src.simulation import _plan_start_soc_kwh
+from src.simulation import resolve_plan_start_soc_kwh
 
 
 def test_plan_start_hour0_uses_day_start_not_live():
     battery_cap = 48.0
     live = 0.22 * battery_cap
     day_start = 0.25 * battery_cap
-    got = _plan_start_soc_kwh(
+    got = resolve_plan_start_soc_kwh(
         0,
         {"soc": [None] * 24},
         battery_cap,
@@ -27,7 +27,7 @@ def test_plan_start_later_hour_uses_prior_influx_end():
     live = 0.22 * battery_cap
     hourly = {"soc": [None] * 24}
     hourly["soc"][2] = 30.0  # end of hour 2
-    got = _plan_start_soc_kwh(
+    got = resolve_plan_start_soc_kwh(
         3,
         hourly,
         battery_cap,

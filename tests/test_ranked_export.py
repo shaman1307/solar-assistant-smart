@@ -17,7 +17,7 @@ from src.plan_optimizer import (
     pick_next_export_hour,
     rank_hours_by_avg_rce,
     round_rce_5_groszy,
-    _evening_export_window_hours,
+    evening_export_window_hours,
 )
 from src.simulation_config import (
     get_simulation_params,
@@ -129,9 +129,9 @@ def test_pick_next_export_hour_seeds_peak_then_grows_edges():
 
 def test_equal_rating_after_rich_hour_prefers_neighbor():
     """Allocator grows the nearer equal-rating edge before a distant hour."""
-    import src.plan_optimizer as po
+    import src.plan_export as pe
 
-    orig = po.pick_next_export_hour
+    orig = pe.pick_next_export_hour
     tried: list[int] = []
 
     def _wrap(remaining, ratings, **kwargs):
@@ -139,7 +139,7 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
         tried.append(h)
         return h
 
-    po.pick_next_export_hour = _wrap
+    pe.pick_next_export_hour = _wrap
     try:
         offset = 16 * 4
         steps = 20  # 16..20
@@ -178,7 +178,7 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
             min_hourly_kwh=0.5,
         )
     finally:
-        po.pick_next_export_hour = orig
+        pe.pick_next_export_hour = orig
 
     assert tried[0] == 19
     assert tried.index(20) < tried.index(16)
@@ -186,9 +186,9 @@ def test_equal_rating_after_rich_hour_prefers_neighbor():
 
 def test_seed_uses_unrounded_avg_then_5_groszy_grows_closer_edge():
     """Seed max raw avg; next hours round to 5 groszy; ties go to the nearer edge."""
-    import src.plan_optimizer as po
+    import src.plan_export as pe
 
-    orig = po.pick_next_export_hour
+    orig = pe.pick_next_export_hour
     tried: list[int] = []
 
     def _wrap(remaining, ratings, **kwargs):
@@ -196,7 +196,7 @@ def test_seed_uses_unrounded_avg_then_5_groszy_grows_closer_edge():
         tried.append(h)
         return h
 
-    po.pick_next_export_hour = _wrap
+    pe.pick_next_export_hour = _wrap
     try:
         offset = 16 * 4
         steps = 24
@@ -236,7 +236,7 @@ def test_seed_uses_unrounded_avg_then_5_groszy_grows_closer_edge():
             min_hourly_kwh=0.5,
         )
     finally:
-        po.pick_next_export_hour = orig
+        pe.pick_next_export_hour = orig
 
     assert tried[0] == 20
     assert tried[1] == 19
@@ -248,7 +248,7 @@ def test_export_window_starts_at_16():
     offset = 14 * 4
     steps = 32  # H14..H21
     hours = list(range(14, 22))
-    window = _evening_export_window_hours(
+    window = evening_export_window_hours(
         hours,
         pv_series=[0.0] * steps,
         load_series=[0.5 / 4] * steps,
@@ -266,7 +266,7 @@ def test_export_window_respects_configured_start_hour():
     offset = 16 * 4
     steps = 24
     hours = list(range(16, 22))
-    window = _evening_export_window_hours(
+    window = evening_export_window_hours(
         hours,
         pv_series=[0.0] * steps,
         load_series=[0.5 / 4] * steps,
@@ -299,7 +299,7 @@ def test_export_window_includes_16_even_when_pv_covers():
         + [1.117 / 4] * 4
     )
     hours = list(range(16, 22))
-    window = _evening_export_window_hours(
+    window = evening_export_window_hours(
         hours,
         pv_series=pv,
         load_series=load,
@@ -314,9 +314,9 @@ def test_export_window_includes_16_even_when_pv_covers():
 
 def test_peak_seeded_then_grows_back_through_16():
     """Window from 16: seed H20, then H19 / H21 / H18 / H17 / H16 by rating."""
-    import src.plan_optimizer as po
+    import src.plan_export as pe
 
-    orig = po.pick_next_export_hour
+    orig = pe.pick_next_export_hour
     tried: list[int] = []
 
     def _wrap(remaining, ratings, **kwargs):
@@ -324,7 +324,7 @@ def test_peak_seeded_then_grows_back_through_16():
         tried.append(h)
         return h
 
-    po.pick_next_export_hour = _wrap
+    pe.pick_next_export_hour = _wrap
     try:
         offset = 16 * 4
         steps = 24
@@ -369,7 +369,7 @@ def test_peak_seeded_then_grows_back_through_16():
             min_hourly_kwh=0.5,
         )
     finally:
-        po.pick_next_export_hour = orig
+        pe.pick_next_export_hour = orig
 
     def hour_export(clock: int) -> float:
         return sum(
@@ -704,9 +704,9 @@ def test_floor_ignores_load_only_quarters_outside_export_span():
     in q1–q3 must NOT count as meeting min_hourly_transfer — otherwise the plan
     shows Feed-in/+PLN without a Dis timer.
     """
-    from src.plan_optimizer import _plan_hour_battery_grid_export_claim
+    from src.plan_optimizer import plan_hour_battery_grid_export_claim
 
-    claim = _plan_hour_battery_grid_export_claim(
+    claim = plan_hour_battery_grid_export_claim(
         hour=23,
         role="last",
         soc0=8.0,  # ~18.6% of 43 — only a thin slice above min+reserve
@@ -732,7 +732,7 @@ def test_floor_ignores_load_only_quarters_outside_export_span():
 
 def test_plan_rows_never_show_orphan_export_without_dis_timer():
     """Battery feed-in above the hourly floor requires a Dis timer_schedule."""
-    from src.debug_smart_plan import run_day_smart_q15_plan, timer_schedule_by_hour
+    from src.plan_q15 import run_day_smart_q15_plan, timer_schedule_by_hour
     from src.grid_config import merge_grid_defaults
     from src.simulation_config import merge_simulation_defaults
     from tests.test_discharge_power_invariants import (

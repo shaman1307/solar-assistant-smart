@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from src.plan_optimizer import (
     HourControl,
-    _BatteryGridExportHourClaim,
-    _hold_soc_for_later_battery_grid_export_claims,
+    BatteryGridExportHourClaim,
+    hold_soc_for_later_battery_grid_export_claims,
     plan_battery_grid_export,
 )
 from tests.test_ranked_export import _cfg
@@ -16,17 +16,17 @@ def test_hold_ignores_later_cheaper_and_next_evening():
     """Hold only richer hours in the same run, not tomorrow evening."""
     # Tonight H19 + H20, tomorrow evening H44 (= next day H20)
     claims = {
-        20: _BatteryGridExportHourClaim(20, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
-        44: _BatteryGridExportHourClaim(44, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
+        20: BatteryGridExportHourClaim(20, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
+        44: BatteryGridExportHourClaim(44, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
     }
     ratings = {19: 1.73, 20: 1.78, 21: 1.30, 44: 1.67}
     # Claiming H19: hold for richer same-run H20 only (~8 kWh AC)
-    hold = _hold_soc_for_later_battery_grid_export_claims(
+    hold = hold_soc_for_later_battery_grid_export_claims(
         claims, from_hour=19, eta_out=1.0, ratings=ratings,
     )
     assert abs(hold - 8.0) < 1e-6
     # Claiming H20 (richest tonight): no hold for cheaper H44 next evening
-    hold20 = _hold_soc_for_later_battery_grid_export_claims(
+    hold20 = hold_soc_for_later_battery_grid_export_claims(
         claims, from_hour=20, eta_out=1.0, ratings=ratings,
     )
     assert hold20 == 0.0
@@ -237,16 +237,16 @@ def test_leftover_exports_overnight_peak_h06():
 
 
 def test_sale_windows_split_on_noon_gap():
-    from src.plan_optimizer import _sale_windows
+    from src.plan_optimizer import sale_windows
 
-    assert _sale_windows([19, 20, 21, 41, 42]) == [[19, 20, 21], [41, 42]]
-    assert _sale_windows([19, 20, 23, 24, 41]) == [[19, 20, 23, 24], [41]]
+    assert sale_windows([19, 20, 21, 41, 42]) == [[19, 20, 21], [41, 42]]
+    assert sale_windows([19, 20, 23, 24, 41]) == [[19, 20, 23, 24], [41]]
 
 
 def test_trim_failed_next_evening_keeps_tonight():
-    from src.plan_optimizer import _trim_remaining_after_failed_export_edge
+    from src.plan_optimizer import trim_remaining_after_failed_export_edge
 
-    kept = _trim_remaining_after_failed_export_edge(
+    kept = trim_remaining_after_failed_export_edge(
         [19, 20, 21, 41], selected={42}, failed_hour=41,
     )
     assert 19 in kept and 20 in kept and 21 in kept

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from .g12_pricing import get_buy_price
-from .inverter_sim import _initial_soc_kwh
+from .inverter_sim import resolve_hour0_soc_kwh
 from .plan_cost import hour_meter_cash_pln
 from .plan_optimizer import HourControl, simulate_hour
 
@@ -123,7 +123,7 @@ def build_baseline_history_rows(
         soc_kwh = max(min_kwh, min(battery_cap, float(initial_soc_kwh)))
     else:
         try:
-            soc_kwh, _ = _initial_soc_kwh(hourly, battery_cap)
+            soc_kwh, _ = resolve_hour0_soc_kwh(hourly, battery_cap)
         except ValueError:
             soc_kwh = min_kwh
         soc_kwh = max(min_kwh, min(battery_cap, soc_kwh))

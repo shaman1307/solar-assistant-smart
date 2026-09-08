@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from src.plan_optimizer import (
     HourControl,
-    _front_load_charge_step_ac,
-    _front_load_offpeak_grid_charge,
-    _grid_charge_ac_kw,
+    battery_grid_charge_step_ac,
+    plan_battery_grid_charge,
+    grid_charge_ac_kw,
 )
-from src.timer_plan import _infer_charge_timer_power_kw
+from src.timer_plan import infer_charge_timer_power_kw
 
 
 OFF = 0.5
@@ -17,7 +17,7 @@ PEAK = 1.2
 
 def test_grid_charge_ac_clips_to_remaining_need():
     """DP step takes only AC still needed for target, not always the cap."""
-    ac = _grid_charge_ac_kw(
+    ac = grid_charge_ac_kw(
         10.0,
         buy_p=OFF,
         offpeak_buy=OFF,
@@ -32,7 +32,7 @@ def test_grid_charge_ac_clips_to_remaining_need():
 
 def test_front_load_packs_at_max_not_spread_over_min_block():
     """2.7 kWh AC → max step rate (dense), not diluted 1.35 over min_block."""
-    rate = _front_load_charge_step_ac(
+    rate = battery_grid_charge_step_ac(
         2.7,
         charge_ac_step=1.6225,
         step_scale=0.25,
@@ -43,7 +43,7 @@ def test_front_load_packs_at_max_not_spread_over_min_block():
 
 
 def test_front_load_keeps_max_when_budget_needs_it():
-    rate = _front_load_charge_step_ac(
+    rate = battery_grid_charge_step_ac(
         3.245,
         charge_ac_step=1.6225,
         step_scale=0.25,
@@ -61,7 +61,7 @@ def test_front_load_offpeak_q15_packs_dense_in_one_hour():
     controls[4] = HourControl(1.6225, 0.0, False)
     controls[5] = HourControl(1.0775, 0.0, False)
     buy = [OFF] * 8
-    out = _front_load_offpeak_grid_charge(
+    out = plan_battery_grid_charge(
         controls,
         pv_series=[0.0] * 8,
         load_series=[0.1] * 8,
@@ -102,7 +102,7 @@ def test_front_load_four_kwh_stays_in_one_clock_hour():
     controls[8] = HourControl(2.0, 0.0, False)
     controls[9] = HourControl(2.0, 0.0, False)
     buy = [OFF] * 12
-    out = _front_load_offpeak_grid_charge(
+    out = plan_battery_grid_charge(
         controls,
         pv_series=[0.0] * 12,
         load_series=[0.05] * 12,
@@ -144,7 +144,7 @@ def test_infer_charge_power_floors_at_min_hourly():
         "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
     }
     # 0.6 kWh in 30 min → raw 1.2 kW, floor 4 kW.
-    assert _infer_charge_timer_power_kw(0.6, 30, cfg) == 4.0
+    assert infer_charge_timer_power_kw(0.6, 30, cfg) == 4.0
 
 
 def test_infer_charge_power_needed_above_floor():
@@ -154,4 +154,4 @@ def test_infer_charge_power_needed_above_floor():
         "timer_schedule": {"min_block_minutes": 30, "min_hourly_transfer_kwh": 2.0},
     }
     # 2.5 kWh / 0.5 h = 5 kW.
-    assert _infer_charge_timer_power_kw(2.5, 30, cfg) == 5.0
+    assert infer_charge_timer_power_kw(2.5, 30, cfg) == 5.0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.debug_smart_plan import run_day_smart_q15_plan, timer_schedule_by_hour
+from src.plan_q15 import run_day_smart_q15_plan, timer_schedule_by_hour
 from src.grid_config import merge_grid_defaults
 from src.simulation_config import (
     get_simulation_params,

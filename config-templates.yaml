@@ -35,7 +35,7 @@ templates:
       losses_pct:
         grid_to_battery: 7.5
         battery_to_load_or_grid: 7.5
-        pv_to_battery: 25.0
+        pv_to_battery: 7.5
         pv_to_grid: 7.5
         pv_to_load: 7.5
     timer_schedule:

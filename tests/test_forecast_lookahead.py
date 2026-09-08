@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.debug_smart_plan import STEP_SCALE, run_rolling_smart_q15_plan
+from src.plan_q15 import STEP_SCALE, run_rolling_smart_q15_plan
 from src.plan_optimizer import (
-    _grid_charge_target_soc_kwh_from_step,
-    _tomorrow_lookahead_start_hour,
+    grid_charge_target_soc_kwh_from_step,
+    tomorrow_lookahead_start_hour,
     build_extended_buy_for_reserve,
     build_extended_pv_load_for_reserve,
 )
@@ -58,7 +58,7 @@ def test_hours_until_end_of_tomorrow():
 def test_tomorrow_lookahead_start_hour_full_day_when_plan_ends_today():
     today = datetime(2026, 8, 9).date()
     end = datetime(2026, 8, 9, 23, 45)
-    assert _tomorrow_lookahead_start_hour(
+    assert tomorrow_lookahead_start_hour(
         end_dt=end, today_date=today, series_len=19 * 4, global_step_offset=5 * 4,
         step_scale=STEP_SCALE,
     ) == 0
@@ -67,7 +67,7 @@ def test_tomorrow_lookahead_start_hour_full_day_when_plan_ends_today():
 def test_tomorrow_lookahead_start_hour_tail_after_rolling_window():
     today = datetime(2026, 8, 9).date()
     end = datetime(2026, 8, 10, 4, 45)
-    assert _tomorrow_lookahead_start_hour(
+    assert tomorrow_lookahead_start_hour(
         end_dt=end, today_date=today, series_len=(19 + 5) * 4, global_step_offset=5 * 4,
         step_scale=STEP_SCALE,
     ) == 5
@@ -177,7 +177,7 @@ def test_charge_target_on_tomorrow_h01_sees_morning_peak():
     )
     step_h01 = 19 * 4 + 4
     floor = 48.0 * 0.18
-    target = _grid_charge_target_soc_kwh_from_step(
+    target = grid_charge_target_soc_kwh_from_step(
         step_h01, pv_x, load_x, buy_x,
         floor, 0.925, 0.925, 0.05, 0.62,
         slots_per_hour=4,

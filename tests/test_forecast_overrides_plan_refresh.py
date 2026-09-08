@@ -167,7 +167,7 @@ def test_ea_future_hour_consumption_follows_forecast_load():
     with (
         patch("src.simulation._now_warsaw", return_value=now),
         patch("src.sqlite_store.read_plan", return_value=None),
-        patch("src.simulation.sa_discharge_timer_for_hour", return_value=""),
+        patch("src.plan_orchestrator.sa_discharge_timer_for_hour", return_value=""),
         patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
     ):
         plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)

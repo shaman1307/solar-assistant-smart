@@ -6,13 +6,13 @@ from src.plan_optimizer import (
     HourControl,
     apply_post_discharge_reserve_floor,
     post_discharge_reserve_soc_kwh,
-    _pv_cover_ends_overnight_need,
+    pv_cover_ends_overnight_need,
 )
 from src.timer_plan import (
     ACTION_DISCHARGE_GRID,
-    _blocks_q15_to_slots,
-    _discharge_cap_pct_from_row,
-    _merge_blocks_q15,
+    blocks_q15_to_slots,
+    discharge_cap_pct_from_row,
+    merge_blocks_q15,
 )
 
 OFF = 0.62
@@ -34,14 +34,14 @@ def _weekday_day_buys() -> list[float]:
 
 
 def test_evening_walk_requires_next_day_pv_cover():
-    assert _pv_cover_ends_overnight_need(
+    assert pv_cover_ends_overnight_need(
         local_hour=18,
         start_local_hour=18,
         crossed_midnight=False,
         seen_insufficient=True,
         cover_bound=13,
     ) is False
-    assert _pv_cover_ends_overnight_need(
+    assert pv_cover_ends_overnight_need(
         local_hour=7,
         start_local_hour=18,
         crossed_midnight=True,
@@ -76,9 +76,9 @@ def test_post_discharge_reserve_from_hour_after_last_dis():
 
 def test_discharge_cap_ceils_reserve_soc_pct():
     """Fractional survive floor rounds up so SA never stops below the model."""
-    assert _discharge_cap_pct_from_row({"reserve_soc_pct": 34.2, "soc": 40.0}, 16) == 35
-    assert _discharge_cap_pct_from_row({"reserve_soc_pct": 31.01, "soc": 40.0}, 16) == 32
-    assert _discharge_cap_pct_from_row({"reserve_soc_pct": 34.0, "soc": 40.0}, 16) == 34
+    assert discharge_cap_pct_from_row({"reserve_soc_pct": 34.2, "soc": 40.0}, 16) == 35
+    assert discharge_cap_pct_from_row({"reserve_soc_pct": 31.01, "soc": 40.0}, 16) == 32
+    assert discharge_cap_pct_from_row({"reserve_soc_pct": 34.0, "soc": 40.0}, 16) == 34
 
 
 def test_apply_floor_uses_per_hour_post_dis_in_multi_hour_run():
@@ -196,7 +196,7 @@ def test_dis_slots_keep_reserve_capacity_pct():
             "reserve_soc_pct": 34.0,
         },
     ]
-    blocks = _merge_blocks_q15(rows, ACTION_DISCHARGE_GRID)
+    blocks = merge_blocks_q15(rows, ACTION_DISCHARGE_GRID)
     assert len(blocks) == 1
     assert blocks[0]["capacity_pct"] == 34
     cfg = {
@@ -208,6 +208,6 @@ def test_dis_slots_keep_reserve_capacity_pct():
         },
         "simulation": {"min_soc_pct": 16},
     }
-    slots = _blocks_q15_to_slots(blocks, "discharge", [], cfg)
+    slots = blocks_q15_to_slots(blocks, "discharge", [], cfg)
     assert slots[0]["capacity_pct"] == 34
     assert slots[0]["capacity_pct"] != 16

@@ -460,17 +460,17 @@ def apply_plan_timer_overrides_if_any(
     if max(overrides.keys()) < int(from_hour):
         return plan
 
-    from .debug_smart_plan import _resolve_rce_quarters, _split_energy_hourly_to_q15
+    from .plan_q15 import resolve_rce_quarters, split_energy_hourly_to_q15
     from .g12_pricing import get_buy_price
 
-    pv_q = _split_energy_hourly_to_q15(pv_hourly)
-    load_q = _split_energy_hourly_to_q15(load_hourly)
+    pv_q = split_energy_hourly_to_q15(pv_hourly)
+    load_q = split_energy_hourly_to_q15(load_hourly)
     base = datetime.strptime(date_str, "%Y-%m-%d")
     buy_q: list[float] = []
     for h in range(24):
         price = get_buy_price(base.replace(hour=h), cfg)[0]
         buy_q.extend([price] * Q15_PER_HOUR)
-    rce_q = _resolve_rce_quarters(date_str, rce_quarters)
+    rce_q = resolve_rce_quarters(date_str, rce_quarters)
     forecast = {
         "today": {"pv": pv_hourly, "load": load_hourly},
         "tomorrow": {"pv": tomorrow_pv, "load": tomorrow_load},

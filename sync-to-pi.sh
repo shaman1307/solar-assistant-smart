@@ -44,6 +44,10 @@ files=(
   src/routes/ev.py
   src/routes/debug.py
   src/debug_smart_plan.py
+  src/plan_q15.py
+  src/plan_physics.py
+  src/plan_types.py
+  src/plan_orchestrator.py
   src/inverter_sim.py
   src/influxdb.py
   src/forecast.py
@@ -53,6 +57,10 @@ files=(
   src/timer_plan.py
   src/simulation.py
   src/plan_optimizer.py
+  src/plan_dp.py
+  src/plan_charge.py
+  src/plan_export.py
+  src/plan_reserve.py
   src/plan_spill.py
   src/plan_hourly_actuals.py
   src/plan_monthly_history.py
@@ -82,9 +90,9 @@ files=(
   scripts/reload-smart.sh
   scripts/restore-sa-defaults.sh
   scripts/enable-smart-autostart.sh
-  smart.service
-  smart-boot-guard.service
-  smart-boot-guard.timer
+  systemd/smart.service
+  systemd/smart-boot-guard.service
+  systemd/smart-boot-guard.timer
   requirements.txt
   config-templates.yaml
 )
@@ -139,8 +147,8 @@ scp "${scp_opts[@]}" "$tar_path" "${REMOTE}:${REMOTE_DIR}/smart-deploy.tgz"
 remote_cmd="cd $REMOTE_DIR"
 remote_cmd+="; tar -xzf smart-deploy.tgz"
 remote_cmd+="; test -f scripts/reload-smart.sh"
-remote_cmd+="; test -f smart.service"
-remote_cmd+="; test -f smart-boot-guard.timer"
+remote_cmd+="; test -f systemd/smart.service"
+remote_cmd+="; test -f systemd/smart-boot-guard.timer"
 remote_cmd+="; rm -f smart-deploy.tgz"
 remote_cmd+="; chmod +x scripts/reload-smart.sh scripts/enable-smart-autostart.sh"
 remote_cmd+="; bash scripts/enable-smart-autostart.sh"

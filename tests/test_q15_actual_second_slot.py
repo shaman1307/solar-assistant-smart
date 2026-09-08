@@ -5,7 +5,7 @@ from __future__ import annotations
 from src.plan_hourly_actuals import (
     TEN_MIN_KWH_PER_KW,
     _actual_q15_battery_grid,
-    _actual_q15_slice_kwh,
+    actual_q15_slice_kwh,
 )
 
 
@@ -31,7 +31,7 @@ def test_q0_includes_charge_that_starts_at_minute_10():
     }
     # q0 = slot0 + 0.5·slot1 = 0 + 0.5·5·(10/60) = 5/12 kWh
     expect = 5.0 * TEN_MIN_KWH_PER_KW * 0.5
-    q0_bat = _actual_q15_slice_kwh(s10["bat_charge"], hour, 0)
+    q0_bat = actual_q15_slice_kwh(s10["bat_charge"], hour, 0)
     assert q0_bat == expect
     bat, gi, _ = _actual_q15_battery_grid(s10, hour, 0)
     assert bat == round(expect, 4)

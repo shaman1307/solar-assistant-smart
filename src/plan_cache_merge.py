@@ -12,7 +12,7 @@ from .plan_cost import compute_plan_totals
 from .plan_hourly_actuals import (
     Q15_PER_HOUR,
     _actual_q15_battery_grid,
-    _actual_q15_slice_kwh,
+    actual_q15_slice_kwh,
     _bound_soc_pct,
     _clamp_soc_pct,
     _soc_kwh_after_battery_delta,
@@ -276,8 +276,8 @@ def _build_actual_q15_slot(
     bat_delta, grid_import, grid_export = _actual_q15_battery_grid(
         series_10min, hour, quarter,
     )
-    pv = _actual_q15_slice_kwh((series_10min or {}).get("pv"), hour, quarter)
-    load = _actual_q15_slice_kwh((series_10min or {}).get("load"), hour, quarter)
+    pv = actual_q15_slice_kwh((series_10min or {}).get("pv"), hour, quarter)
+    load = actual_q15_slice_kwh((series_10min or {}).get("load"), hour, quarter)
     soc_kwh = _soc_kwh_after_battery_delta(
         soc_start_kwh,
         bat_delta,

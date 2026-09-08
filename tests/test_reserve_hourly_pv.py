@@ -3,9 +3,9 @@
 import pytest
 
 from src.plan_optimizer import (
-    _grid_charge_ac_kw,
-    _grid_charge_target_soc_kwh_from_step,
-    _reserve_soc_kwh_from_step,
+    grid_charge_ac_kw,
+    grid_charge_target_soc_kwh_from_step,
+    reserve_soc_kwh_from_step,
     morning_cover_bound_from_hour_buys,
 )
 
@@ -58,7 +58,7 @@ def test_reserve_not_cut_by_single_sunny_q15():
     day0 = _weekday_day_buys()
     day1 = _weekday_day_buys()
     buy = _q15_buys(day0[20:] + day1[:3])
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=1.5,
         eta_out=0.9,
@@ -84,7 +84,7 @@ def test_evening_sun_does_not_stop_before_midnight():
     day1 = _weekday_day_buys()
     buy = _q15_buys(day0[18:] + day1[:2])
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -111,7 +111,7 @@ def test_afternoon_gap_does_not_stop_before_tonight():
     day1 = _weekday_day_buys()
     buy = _q15_buys(day0[12:] + day1[:2])
     floor = 1.0
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -135,7 +135,7 @@ def test_post_midnight_stops_on_same_morning_not_next_day():
     load = [0.2] * len(pv)
     buy = _q15_buys(_weekday_day_buys() + _weekday_day_buys())
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -157,7 +157,7 @@ def test_morning_hour_does_not_reserve_through_next_night():
     load = [0.2] * len(pv)
     buy = _q15_buys(_weekday_day_buys()[6:] + _weekday_day_buys())
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         0, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -177,7 +177,7 @@ def test_g12_morning_peak_hour_12_pv_cover_stops_walk():
     load = [0.2] * len(pv)
     buy = _q15_buys(_weekday_day_buys())
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -201,7 +201,7 @@ def test_weekend_reserve_stops_on_morning_pv_not_fake_peak_window():
     load = [0.2] * len(pv)
     buy = _q15_buys(_weekend_day_buys() + _weekend_day_buys())
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -226,7 +226,7 @@ def test_weekend_afternoon_gap_does_not_use_weekday_peak_end():
     load = [0.2] * len(pv)
     buy = _q15_buys(_weekend_day_buys()[12:] + _weekend_day_buys()[:2])
     floor = 1.0
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -245,12 +245,12 @@ def test_weekend_grid_charge_target_ignores_overnight_offpeak_load():
     load = [0.2] * len(pv)
     buy = [OFF] * len(pv)
     floor = 1.5
-    target = _grid_charge_target_soc_kwh_from_step(
+    target = grid_charge_target_soc_kwh_from_step(
         3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
         global_step_offset=0,
     )
     assert target == pytest.approx(floor)
-    assert _grid_charge_ac_kw(
+    assert grid_charge_ac_kw(
         10.0, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
     ) == 0.0
@@ -263,17 +263,17 @@ def test_weekday_grid_charge_target_includes_morning_peak():
     buy = [OFF] * 24 + [PEAK] * 8 + [PEAK] * 4
     buy = buy[: len(pv)]
     floor = 1.5
-    target = _grid_charge_target_soc_kwh_from_step(
+    target = grid_charge_target_soc_kwh_from_step(
         3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
         global_step_offset=0,
     )
     # Offpeak steps ignored; peak steps 24..31 → 8 × 0.2.
     assert target == pytest.approx(floor + 1.6)
-    assert _grid_charge_ac_kw(
+    assert grid_charge_ac_kw(
         floor + 0.5, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
     ) > 0.0
-    assert _grid_charge_ac_kw(
+    assert grid_charge_ac_kw(
         target + 0.1, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
     ) == 0.0
@@ -287,7 +287,7 @@ def test_dark_weekend_day_never_covers_walk_sums_horizon():
     load = [0.5] * (hours * 4)
     buy = [OFF] * len(pv)
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,
@@ -300,7 +300,7 @@ def test_dark_weekend_day_never_covers_walk_sums_horizon():
     # From after hour 0: hours 1..11 always deficit → 11 × 0.5 (q15 sum per hour = 2.0)
     # each hour load 2.0, pv 0.2 → deficit 1.8 per hour × 11
     assert reserve == pytest.approx(floor + 11 * 1.8)
-    target = _grid_charge_target_soc_kwh_from_step(
+    target = grid_charge_target_soc_kwh_from_step(
         3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
         global_step_offset=0,
     )
@@ -330,7 +330,7 @@ def test_evening_only_bound_does_not_stop_on_evening_pv_cover():
     day1 = _weekend_day_buys()
     buy = _q15_buys(day0[18:] + day1[:2])
     floor = 1.5
-    reserve = _reserve_soc_kwh_from_step(
+    reserve = reserve_soc_kwh_from_step(
         3, pv, load,
         reserve_floor_kwh=floor,
         eta_out=1.0,

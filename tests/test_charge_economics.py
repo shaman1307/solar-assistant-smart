@@ -6,8 +6,8 @@ import pytest
 
 from src.plan_optimizer import (
     HourControl,
-    _correct_min_hourly_transfer_controls,
-    _front_load_offpeak_grid_charge,
+    enforce_min_hourly_battery_grid_limits,
+    plan_battery_grid_charge,
     offpeak_min_block_charge_is_worth,
 )
 
@@ -87,7 +87,7 @@ def test_threshold_clears_sub_min_hourly_charge():
         HourControl(0.0, 0.0),
         HourControl(0.0, 0.0),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=0,
         step_scale=0.25,
@@ -104,7 +104,7 @@ def test_threshold_keeps_charge_at_or_above_min_hourly():
         HourControl(0.0, 0.0),
         HourControl(0.0, 0.0),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=0,
         step_scale=0.25,
@@ -127,7 +127,7 @@ def _front_load(
     for i, ac in budget_slots:
         controls[i] = HourControl(ac, 0.0, False)
     prices = buy or ([OFF] * 8 + [PEAK] * (n_steps - 8))
-    return _front_load_offpeak_grid_charge(
+    return plan_battery_grid_charge(
         controls,
         pv_series=[0.0] * n_steps,
         load_series=[0.05] * n_steps,

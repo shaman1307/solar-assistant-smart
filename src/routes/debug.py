@@ -14,7 +14,7 @@ from .. import sa_client
 from ..config import load_config
 from .. import forecast as forecast_mod
 from ..debug_plan import merge_ea_plan_into_debug_day
-from ..debug_smart_plan import (
+from ..plan_q15 import (
     apply_smart_plan_for_day,
     hourly_rows_from_pv_load,
     merge_today_hourly_profile,

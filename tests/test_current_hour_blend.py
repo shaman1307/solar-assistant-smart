@@ -136,10 +136,10 @@ def test_at_45_freezes_q0_q1_open_pulls_q2():
     per_q = 0.2
     pv_q = _q15_hour(hour, per_q)
 
-    from src.plan_hourly_actuals import _actual_q15_slice_kwh
+    from src.plan_hourly_actuals import actual_q15_slice_kwh
 
-    q0 = _actual_q15_slice_kwh(series["pv"], hour, 0)
-    q1 = _actual_q15_slice_kwh(series["pv"], hour, 1)
+    q0 = actual_q15_slice_kwh(series["pv"], hour, 0)
+    q1 = actual_q15_slice_kwh(series["pv"], hour, 1)
     open_q2 = kw * TEN_MIN_KWH_PER_KW + per_q / 3.0
     forecast_q3 = per_q
     pv, _ = blend_current_hour_end(

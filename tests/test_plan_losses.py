@@ -154,3 +154,33 @@ def test_reserve_min_soc_margin():
     cfg = _cfg()
     assert plan_min_soc_pct(cfg) == 15.0
     assert plan_reserve_min_soc_pct(cfg) == 15.0 * RESERVE_MIN_SOC_MARGIN
+
+
+def test_loss_defaults_single_source():
+    """Code defaults, install template, and Configuration form share 7.5% losses."""
+    from pathlib import Path
+
+    from src.simulation_config import DEFAULT_SIMULATION, simulation_form_defaults
+
+    losses = DEFAULT_SIMULATION["losses_pct"]
+    assert losses == {
+        "grid_to_battery": 7.5,
+        "battery_to_load_or_grid": 7.5,
+        "pv_to_battery": 7.5,
+        "pv_to_grid": 7.5,
+        "pv_to_load": 7.5,
+    }
+    form = simulation_form_defaults()
+    for key, pct in losses.items():
+        assert form[f"simulation.losses_pct.{key}"] == pct
+
+    root = Path(__file__).resolve().parents[1]
+    yaml_text = (root / "config-templates.yaml").read_text(encoding="utf-8")
+    for key in losses:
+        assert f"{key}: 7.5" in yaml_text
+    html = (root / "src" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "simulation_form_defaults" in html
+    assert "losses_pct.pv_to_battery'] }}" in html or "simulation_form_defaults | tojson" in html
+    assert "pv_to_battery': 25" not in html
+    assert 'value="25"' not in html.split("Energy arbitrage model")[1].split("Timer Schedule")[0]
+

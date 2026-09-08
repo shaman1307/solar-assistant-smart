@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import patch
 
-from src.debug_smart_plan import run_day_smart_q15_plan
+from src.plan_q15 import run_day_smart_q15_plan
 from src.grid_config import merge_grid_defaults
+from src.plan_optimizer import HourControl, plan_battery_grid_charge
 from src.simulation import (
-    _committed_current_hour_row,
-    _plan_row_end_soc_kwh,
+    committed_current_hour_row,
+    plan_row_end_soc_kwh,
     apply_locked_hour_labels_from_plan,
 )
 from src.simulation_config import (
@@ -67,8 +68,6 @@ def _cfg() -> dict:
 
 def test_front_load_skip_zero_keeps_charge_in_first_slot():
     """skip_leading_slots=0 must not clear DP charge already in step 0."""
-    from src.plan_optimizer import HourControl, _front_load_offpeak_grid_charge
-
     cfg = _cfg()
     params = get_simulation_params(cfg)
     eps = float(params["epsilon_kwh"])
@@ -83,7 +82,7 @@ def test_front_load_skip_zero_keeps_charge_in_first_slot():
     load = [0.2] * 4
     buy = [OFF, OFF, OFF, PEAK]
     reserves = [plan_min_soc_kwh(cfg)] * 4
-    kept = _front_load_offpeak_grid_charge(
+    kept = plan_battery_grid_charge(
         controls,
         pv_series=pv,
         load_series=load,
@@ -108,7 +107,7 @@ def test_front_load_skip_zero_keeps_charge_in_first_slot():
     )
     assert kept[0].grid_charge_kw > 0.05
 
-    cleared = _front_load_offpeak_grid_charge(
+    cleared = plan_battery_grid_charge(
         controls,
         pv_series=pv,
         load_series=load,
@@ -146,7 +145,7 @@ def test_plan_row_end_soc_from_q15():
             {"quarter": 3, "soc": 23.6},
         ],
     }
-    assert abs(_plan_row_end_soc_kwh(row, 48.0) - 0.236 * 48.0) < 1e-6
+    assert abs(plan_row_end_soc_kwh(row, 48.0) - 0.236 * 48.0) < 1e-6
 
 
 def test_committed_current_hour_row_requires_timer():
@@ -163,12 +162,12 @@ def test_committed_current_hour_row_requires_timer():
         ],
     }
     with patch("src.sqlite_store.read_plan", return_value=plan):
-        row = _committed_current_hour_row("2026-07-21", 1)
+        row = committed_current_hour_row("2026-07-21", 1)
     assert row is not None
     assert "Chg 01:00-01:30" in row["timer_schedule"]
 
     with patch("src.sqlite_store.read_plan", return_value=plan):
-        assert _committed_current_hour_row("2026-07-21", 2) is None
+        assert committed_current_hour_row("2026-07-21", 2) is None
 
     empty = {
         "rows": [{
@@ -179,7 +178,7 @@ def test_committed_current_hour_row_requires_timer():
         }],
     }
     with patch("src.sqlite_store.read_plan", return_value=empty):
-        assert _committed_current_hour_row("2026-07-21", 1) is None
+        assert committed_current_hour_row("2026-07-21", 1) is None
 
 
 def test_apply_locked_at_hour_start_keeps_existing_chg():
@@ -350,7 +349,7 @@ def test_mid_hour_forward_soc_uses_planned_eoh_not_live_blend():
         patch("src.simulation._now_warsaw", return_value=now),
         patch("src.sqlite_store.read_plan", return_value=stored),
         patch(
-            "src.simulation.build_blended_current_hour_q15",
+            "src.plan_orchestrator.build_blended_current_hour_q15",
             return_value=low_blend,
         ),
         patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
@@ -368,7 +367,7 @@ def test_mid_hour_forward_soc_uses_planned_eoh_not_live_blend():
     # Next hour must chain from planned EOH 50%, not live ~21.
     h4 = float(by_h[4]["soc"])
     assert h4 >= 40.0, f"H04 soc={h4} should track from planned EOH 50% (cap={cap})"
-    assert abs(_plan_row_end_soc_kwh(committed, cap) - 0.5 * cap) < 1e-6
+    assert abs(plan_row_end_soc_kwh(committed, cap) - 0.5 * cap) < 1e-6
 
 
 def test_valid_locked_chg_stays_committed_not_replanned():
@@ -509,7 +508,7 @@ def test_committed_chg_blend_uses_locked_timer_not_sa_rules():
     with (
         patch("src.simulation._now_warsaw", return_value=now),
         patch("src.sqlite_store.read_plan", return_value=stored),
-        patch("src.simulation.sa_discharge_timer_for_hour", return_value=""),
+        patch("src.plan_orchestrator.sa_discharge_timer_for_hour", return_value=""),
         patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),
     ):
         plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
@@ -618,7 +617,7 @@ def test_idle_current_hour_forward_soc_chains_from_display_blend():
         patch("src.simulation._now_warsaw", return_value=now),
         patch("src.sqlite_store.read_plan", return_value=stored),
         patch(
-            "src.simulation.build_blended_current_hour_q15",
+            "src.plan_orchestrator.build_blended_current_hour_q15",
             return_value=display_blend,
         ),
         patch("src.simulation.quarter_rce_for_dates", return_value={today: [0.1] * 96}),

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+UNITS_DIR="${PROJECT_DIR}/systemd"
 UNIT=smart
 GUARD=smart-boot-guard
 LEGACY=solar-smart.service
@@ -12,7 +13,7 @@ TIMER_WANTS="/etc/systemd/system/timers.target.wants/${GUARD}.timer"
 
 install_unit() {
   local name="$1"
-  local src="${PROJECT_DIR}/${name}.service"
+  local src="${UNITS_DIR}/${name}.service"
   if [ ! -f "${src}" ]; then
     echo "[enable-smart-autostart] ERROR: missing ${src}" >&2
     exit 1
@@ -23,10 +24,11 @@ install_unit() {
 echo "[enable-smart-autostart] installing ${UNIT}.service ..."
 install_unit "${UNIT}"
 
-if [ -f "${PROJECT_DIR}/${GUARD}.service" ]; then
+if [ -f "${UNITS_DIR}/${GUARD}.service" ]; then
   install_unit "${GUARD}"
-  sudo cp "${PROJECT_DIR}/${GUARD}.timer" "/etc/systemd/system/${GUARD}.timer"
+  sudo cp "${UNITS_DIR}/${GUARD}.timer" "/etc/systemd/system/${GUARD}.timer"
 fi
+rm -f "${PROJECT_DIR}/smart.service" "${PROJECT_DIR}/smart-boot-guard.service" "${PROJECT_DIR}/smart-boot-guard.timer"
 
 if [ -f "${LEGACY_PATH}" ]; then
   echo "[enable-smart-autostart] removing ${LEGACY} ..."

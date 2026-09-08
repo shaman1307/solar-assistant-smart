@@ -12,9 +12,9 @@ from src.plan_cost import hour_grid_cash_pln
 from src.plan_optimizer import (
     DP_COST_INF,
     HourControl,
-    _control_options,
-    _grid_charge_target_soc_kwh_from_step,
-    _reserve_soc_kwh_from_step,
+    control_options,
+    grid_charge_target_soc_kwh_from_step,
+    reserve_soc_kwh_from_step,
     battery_export_step_allowed,
     g12_tariff_from_cfg,
     optimize_horizon,
@@ -114,7 +114,7 @@ def _path_cost_and_socs(
     steps = len(controls)
 
     reserves = [
-        _reserve_soc_kwh_from_step(
+        reserve_soc_kwh_from_step(
             s, pv_series, load_series, reserve_floor, eta_out, eta_pv_load, eps_step,
             buy_series=buy_prices, offpeak_buy=offpeak,
             slots_per_hour=max(1, int(round(1.0 / step_scale))),
@@ -127,8 +127,8 @@ def _path_cost_and_socs(
         from src.plan_optimizer import export_credit_price
         return export_credit_price(rce, tariff, from_battery=from_battery, cfg=cfg)
 
-    from src.plan_optimizer import _tail_start_hour
-    tail_start = _tail_start_hour(
+    from src.plan_optimizer import tail_start_hour
+    tail_start = tail_start_hour(
         steps=steps, rce_step_offset=rce_step_offset,
         step_scale=step_scale, end_dt=end_dt,
     )
@@ -211,7 +211,7 @@ def _brute_best_cost(
     slots = max(1, int(round(1.0 / step_scale)))
 
     reserves = [
-        _reserve_soc_kwh_from_step(
+        reserve_soc_kwh_from_step(
             s, pv_series, load_series, reserve_floor, eta_out, eta_pv_load, eps_step,
             buy_series=buy_prices, offpeak_buy=offpeak,
             slots_per_hour=slots, global_step_offset=rce_step_offset,
@@ -219,7 +219,7 @@ def _brute_best_cost(
         for s in range(steps)
     ]
     charge_targets = [
-        _grid_charge_target_soc_kwh_from_step(
+        grid_charge_target_soc_kwh_from_step(
             s, pv_series, load_series, buy_prices, reserve_floor,
             eta_out, eta_pv_load, eps_step, offpeak,
             slots_per_hour=slots, global_step_offset=rce_step_offset,
@@ -227,12 +227,12 @@ def _brute_best_cost(
         for s in range(steps)
     ]
 
-    from src.plan_optimizer import export_credit_price, _tail_start_hour
+    from src.plan_optimizer import export_credit_price, tail_start_hour
 
     def _pv_export_credit(rce, *, from_battery: bool):
         return export_credit_price(rce, tariff, from_battery=from_battery, cfg=cfg)
 
-    tail_start = _tail_start_hour(
+    tail_start = tail_start_hour(
         steps=steps, rce_step_offset=rce_step_offset,
         step_scale=step_scale, end_dt=end_dt,
     )
@@ -266,7 +266,7 @@ def _brute_best_cost(
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
         allow = False  # Match optimize_horizon: export is ranked post-pass, not in DP.
         g12_zone = "peak" if buy_p > offpeak + eps_step else "offpeak"
-        for ctrl in _control_options(
+        for ctrl in control_options(
             soc, pv, load,
             battery_cap=battery_cap, min_kwh=min_kwh,
             discharge_dc_cap_kwh=discharge_dc,

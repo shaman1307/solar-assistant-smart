@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..config import load_config
 from ..influxdb import now_warsaw
+from ..simulation_config import simulation_form_defaults
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
@@ -68,6 +69,7 @@ def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLRespo
         "work_mode_options": _work_mode_options_for_template(),
         "battery_discharge_mode_options": _battery_discharge_mode_options_for_template(),
         "solar_power_priority_options": _solar_power_priority_options_for_template(),
+        "simulation_form_defaults": simulation_form_defaults(),
     }
     # Try TemplateResponse(request, name, context); on TypeError use (name, context).
     try:

@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.debug_smart_plan import run_day_smart_q15_plan
-from src.plan_optimizer import HourControl, _correct_min_hourly_transfer_controls
+from src.plan_q15 import run_day_smart_q15_plan
+from src.plan_optimizer import HourControl, enforce_min_hourly_battery_grid_limits
 
 
 def _cfg(**timer_schedule) -> dict:
@@ -60,7 +60,7 @@ def test_correct_zeros_sub_threshold_hour_export():
         HourControl(0.0, 0.45),
         HourControl(0.0, 0.0),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=16 * 4,
         step_scale=0.25,
@@ -78,7 +78,7 @@ def test_correct_zeros_single_quarter_orphan_export():
         HourControl(0.0, 0.0),
         HourControl(0.0, 0.0),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=23 * 4,
         step_scale=0.25,
@@ -95,7 +95,7 @@ def test_correct_keeps_export_at_or_above_floor():
         HourControl(0.0, 0.5),
         HourControl(0.0, 0.5),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=0,
         step_scale=0.25,
@@ -113,7 +113,7 @@ def test_correct_zeros_sub_threshold_hour_charge():
         HourControl(0.0, 0.0),
         HourControl(0.0, 0.0),
     ]
-    out = _correct_min_hourly_transfer_controls(
+    out = enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=0,
         step_scale=0.25,

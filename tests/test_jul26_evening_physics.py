@@ -41,7 +41,7 @@ from src.simulation_config import (
     plan_min_soc_kwh,
     plan_timer_discharge_power_kw,
 )
-from src.timer_plan import _infer_discharge_timer_power_kw
+from src.timer_plan import infer_discharge_timer_power_kw
 
 # Actual UI table 2026-07-26 (end-of-hour SOC). Start 16:00 = H15 end 52.6%.
 SOC15_END_PCT = 52.6
@@ -263,7 +263,7 @@ def test_jul26_discharge_from_20_lands_near_morning_min():
     duration_min = (active[-1] - active[0] + 1) * 15
     export_k = sum(controls[q].battery_export_kwh for q in active)
     load_k = sum(load_s[q] for q in active)
-    pwr = _infer_discharge_timer_power_kw(
+    pwr = infer_discharge_timer_power_kw(
         export_kwh=export_k,
         duration_min=duration_min,
         cfg=cfg,

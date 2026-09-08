@@ -6,23 +6,9 @@ from datetime import datetime
 from typing import Any
 
 from .g12_pricing import get_buy_price
+from .plan_physics import HourControl, pv_load_energy_split, simulate_hour
 
-
-def pv_load_energy_split(
-    pv: float,
-    load: float,
-    *,
-    eta_pv_load: float,
-) -> tuple[float, float]:
-    """Split AC-meter PV vs AC load into deficit and surplus for battery/export.
-
-    Plan PV/load series are already AC (inverter / house meter). Do not apply
-    ``eta_pv_load`` as a second conversion — that double-counts and inflates
-    SOC on PV→battery. ``eta_pv_load <= 0`` still means ignore PV (full deficit).
-    """
-    if eta_pv_load <= 0:
-        return max(0.0, load), max(0.0, pv)
-    return max(0.0, load - pv), max(0.0, pv - load)
+__all__ = ["pv_load_energy_split", "build_tail_hour_arrays", "tail_balance_cost_pln"]
 
 
 def _natural_hour(
@@ -40,34 +26,20 @@ def _natural_hour(
     epsilon: float,
 ) -> tuple[float, float, float]:
     """Battery+PV only. Returns (soc_end, grid_import, grid_export)."""
-    grid_import = 0.0
-    grid_export = 0.0
-
-    deficit, pv_surplus = pv_load_energy_split(pv, load, eta_pv_load=eta_pv_load)
-    available = max(0.0, soc - min_kwh)
-
-    if deficit > epsilon and available > epsilon and eta_out > 0:
-        supplied = min(deficit, available * eta_out)
-        soc -= supplied / eta_out
-        available = max(0.0, soc - min_kwh)
-        if deficit > supplied + epsilon:
-            grid_import += deficit - supplied
-    elif deficit > epsilon:
-        grid_import += deficit
-
-    export_headroom = max(0.0, ac_cap_kw - load)
-    head_room = max(0.0, battery_cap - soc)
-    if pv_surplus > epsilon:
-        if head_room > epsilon and eta_pv_battery > 0:
-            taken = min(pv_surplus, head_room / eta_pv_battery)
-            stored = taken * eta_pv_battery
-            soc += stored
-            pv_surplus -= taken
-        if pv_surplus > epsilon and export_headroom > epsilon and eta_pv_grid > 0:
-            grid_export += min(pv_surplus * eta_pv_grid, export_headroom)
-
-    soc = max(min_kwh, min(battery_cap, soc))
-    return soc, grid_import, grid_export
+    phys = simulate_hour(
+        soc, pv, load, HourControl(0.0, 0.0),
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        ac_cap_kw=ac_cap_kw,
+        eta_grid=1.0,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
+        epsilon=epsilon,
+    )
+    soc_end = max(min_kwh, min(battery_cap, phys.soc_end))
+    return soc_end, phys.grid_import, phys.grid_export
 
 
 def _forecast_day_key(dt: datetime, today_date) -> str:

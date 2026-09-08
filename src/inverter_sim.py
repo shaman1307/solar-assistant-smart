@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import load_config
+from .plan_physics import HourControl, simulate_hour
 from .simulation_config import get_simulation_params, merge_simulation_defaults
 
 
@@ -36,7 +37,7 @@ def _f(val: float | None) -> float | None:
     return float(val)
 
 
-def _initial_soc_kwh(
+def resolve_hour0_soc_kwh(
     hourly: dict[str, list],
     battery_cap: float,
     *,
@@ -81,44 +82,28 @@ def simulate_hour_load_priority(
     epsilon: float = 0.001,
 ) -> HourSimResult:
     """One hour: PV serves load first; deficit from battery then grid; surplus to battery then grid."""
-    soc = soc_kwh
-    grid_import = 0.0
-    grid_export = 0.0
-    bat_charge = 0.0
-    bat_discharge = 0.0
-
     pv_kwh = max(0.0, pv_kwh)
     load_kwh = max(0.0, load_kwh)
-    deficit = max(0.0, load_kwh - pv_kwh)
-    surplus = max(0.0, pv_kwh - load_kwh)
-
-    if deficit > epsilon:
-        available = max(0.0, soc - min_kwh)
-        withdraw = min(deficit, available)
-        if withdraw > epsilon:
-            soc -= withdraw
-            bat_discharge += withdraw
-            deficit -= withdraw
-        if deficit > epsilon:
-            grid_import += deficit
-
-    export_headroom = max(0.0, ac_cap_kwh - load_kwh)
-    if surplus > epsilon:
-        headroom = max(0.0, battery_cap - soc)
-        if headroom > epsilon:
-            to_bat = min(surplus, headroom)
-            soc += to_bat
-            bat_charge += to_bat
-            surplus -= to_bat
-        if surplus > epsilon and export_headroom > epsilon:
-            grid_export += min(surplus, export_headroom)
-
-    soc = max(min_kwh, min(battery_cap, soc))
+    phys = simulate_hour(
+        soc_kwh, pv_kwh, load_kwh, HourControl(0.0, 0.0),
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        ac_cap_kw=ac_cap_kwh,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        epsilon=epsilon,
+    )
+    soc = max(min_kwh, min(battery_cap, phys.soc_end))
+    bat_charge = max(0.0, phys.battery_delta)
+    bat_discharge = max(0.0, -phys.battery_delta)
     return HourSimResult(
         soc_kwh=soc,
         soc_pct=(soc / battery_cap) * 100.0 if battery_cap > 0 else 0.0,
-        grid_import=round(grid_import, 3),
-        grid_export=round(grid_export, 3),
+        grid_import=round(phys.grid_import, 3),
+        grid_export=round(phys.grid_export, 3),
         bat_charge=round(bat_charge, 3),
         bat_discharge=round(bat_discharge, 3),
     )
@@ -139,7 +124,7 @@ def simulate_day_from_profile(
     ac_cap_kwh = float(cfg["inverter"]["ac_capacity_kw"])
     epsilon = float(params["epsilon_kwh"])
 
-    start_kwh, start_pct = _initial_soc_kwh(
+    start_kwh, start_pct = resolve_hour0_soc_kwh(
         hourly,
         battery_cap,
         override_pct=initial_soc_pct,

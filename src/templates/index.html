@@ -2674,12 +2674,12 @@
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Max battery charge power (kW DC)</label>
-            <input name="battery.max_charge_power_kw" type="number" step="0.1" min="0.1" max="6" required value="6"
+            <input name="battery.max_charge_power_kw" type="number" step="0.1" min="0.1" max="6" required value="{{ simulation_form_defaults['battery.max_charge_power_kw'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Max battery discharge power (kW DC)</label>
-            <input name="battery.max_discharge_power_kw" type="number" step="0.1" min="0.1" max="8" required value="8"
+            <input name="battery.max_discharge_power_kw" type="number" step="0.1" min="0.1" max="8" required value="{{ simulation_form_defaults['battery.max_discharge_power_kw'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
@@ -2701,32 +2701,32 @@
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="text-xs text-gray-500 block mb-1">Min SOC (%)</label>
-            <input name="simulation.min_soc_pct" type="number" step="1" min="0" max="50" required value="15"
+            <input name="simulation.min_soc_pct" type="number" step="1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.min_soc_pct'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Loss PV→battery (%)</label>
-            <input name="simulation.losses_pct.pv_to_battery" type="number" step="0.1" min="0" max="50" required value="7.5"
+            <input name="simulation.losses_pct.pv_to_battery" type="number" step="0.1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.losses_pct.pv_to_battery'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Loss grid→battery (%)</label>
-            <input name="simulation.losses_pct.grid_to_battery" type="number" step="0.1" min="0" max="50" required value="7.5"
+            <input name="simulation.losses_pct.grid_to_battery" type="number" step="0.1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.losses_pct.grid_to_battery'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Loss battery out (%)</label>
-            <input name="simulation.losses_pct.battery_to_load_or_grid" type="number" step="0.1" min="0" max="50" required value="7.5"
+            <input name="simulation.losses_pct.battery_to_load_or_grid" type="number" step="0.1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.losses_pct.battery_to_load_or_grid'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Loss PV→grid (%)</label>
-            <input name="simulation.losses_pct.pv_to_grid" type="number" step="0.1" min="0" max="50" required value="7.5"
+            <input name="simulation.losses_pct.pv_to_grid" type="number" step="0.1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.losses_pct.pv_to_grid'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Loss PV→load (%)</label>
-            <input name="simulation.losses_pct.pv_to_load" type="number" step="0.1" min="0" max="50" required value="7.5"
+            <input name="simulation.losses_pct.pv_to_load" type="number" step="0.1" min="0" max="50" required value="{{ simulation_form_defaults['simulation.losses_pct.pv_to_load'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
@@ -2738,12 +2738,12 @@
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="text-xs text-gray-500 block mb-1">Min import/export period (min)</label>
-            <input name="timer_schedule.min_block_minutes" type="number" step="15" min="15" max="60" required value="30"
+            <input name="timer_schedule.min_block_minutes" type="number" step="15" min="15" max="60" required value="{{ simulation_form_defaults['timer_schedule.min_block_minutes'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1">Min hourly battery charge/discharge (kWh)</label>
-            <input name="timer_schedule.min_hourly_transfer_kwh" type="number" step="0.1" min="0" required value="2"
+            <input name="timer_schedule.min_hourly_transfer_kwh" type="number" step="0.1" min="0" required value="{{ simulation_form_defaults['timer_schedule.min_hourly_transfer_kwh'] }}"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
@@ -5988,18 +5988,7 @@ function removePvBlock(btn) {
 }
 
 function populateForm(cfg) {
-  const SIM_DEFAULTS = {
-    'simulation.min_soc_pct': 15,
-    'simulation.losses_pct.pv_to_battery': 7.5,
-    'simulation.losses_pct.grid_to_battery': 7.5,
-    'simulation.losses_pct.battery_to_load_or_grid': 7.5,
-    'simulation.losses_pct.pv_to_grid': 7.5,
-    'simulation.losses_pct.pv_to_load': 7.5,
-    'timer_schedule.min_block_minutes': 30,
-    'timer_schedule.min_hourly_transfer_kwh': 2,
-    'battery.max_charge_power_kw': 6,
-    'battery.max_discharge_power_kw': 8,
-  };
+  const SIM_DEFAULTS = {{ simulation_form_defaults | tojson }};
   const form = document.getElementById('cfg-form');
   form.querySelectorAll('[name]').forEach(el => {
     const val = deepGet(cfg, el.name);
