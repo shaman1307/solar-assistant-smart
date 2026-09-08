@@ -3599,6 +3599,12 @@ const CHART_SLOTS_PER_HOUR = 6;
 const CHART_SLOTS_Q15 = 96;
 const CHART_SLOTS_PER_HOUR_Q15 = 4;
 
+/** X of slot i at interval end so hour-h grid matches clock h:00. */
+function slotEndX(i, slotCount) {
+  const n = Math.max(1, slotCount);
+  return Math.min(n, Math.max(0, i + 1)) / n * 1000;
+}
+
 /** 15-min kWh bucket → average kW over the slot. */
 function q15EnergyToDisplayKw(q15) {
   if (!q15) return [];
@@ -3873,7 +3879,7 @@ function dashLinePts(data, slotCount, toY) {
     if (v == null) continue;
     const y = toY(Number(v));
     if (y == null) continue;
-    pts.push(`${((i + 0.5) / slotCount * 1000).toFixed(1)},${y}`);
+    pts.push(`${slotEndX(i, slotCount).toFixed(1)},${y}`);
   }
   return pts.join(' ');
 }
@@ -3924,11 +3930,13 @@ function chartHourTitle(hour, dateStr) {
 }
 
 function chartSlotTitle(slot, dateStr, slotsPerHour = CHART_SLOTS_PER_HOUR) {
-  const hour = Math.floor(slot / slotsPerHour);
-  const min = (slot % slotsPerHour) * (60 / slotsPerHour);
-  const hh = String(hour).padStart(2, '0');
-  const mm = String(min).padStart(2, '0');
-  return dateStr ? `${dateStr} ${hh}:${mm}` : `${hh}:${mm}`;
+  const minutesPerSlot = 60 / slotsPerHour;
+  const endMin = (slot + 1) * minutesPerSlot;
+  const pad = n => String(n).padStart(2, '0');
+  const clock = endMin >= 24 * 60
+    ? '24:00'
+    : `${pad(Math.floor(endMin / 60))}:${pad(endMin % 60)}`;
+  return dateStr ? `${dateStr} ${clock}` : clock;
 }
 
 function tooltipRow(name, value) {
@@ -3972,7 +3980,8 @@ function bindDashChartHover(areaEl, tooltipEl, wrapEl, onHour, slotCount = 24) {
     const rect = layer.getBoundingClientRect();
     if (!rect.width) return;
     const maxSlot = Math.max(1, slotCount) - 1;
-    const slot = Math.min(maxSlot, Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * slotCount)));
+    const frac = (e.clientX - rect.left) / rect.width;
+    const slot = Math.min(maxSlot, Math.max(0, Math.ceil(frac * slotCount) - 1));
     const html = onHour(slot);
     if (!html) { hide(); return; }
     tooltipEl.innerHTML = html;
@@ -6727,6 +6736,16 @@ function stepPath(pts) {
   return d.join(' ');
 }
 
+/** Straight segments between samples — same geometry as Forecast Overrides polylines. */
+function linearPath(pts) {
+  if (!pts.length) return '';
+  const d = [`M ${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`];
+  for (let i = 1; i < pts.length; i++) {
+    d.push(`L ${pts[i].x.toFixed(2)},${pts[i].y.toFixed(2)}`);
+  }
+  return d.join(' ');
+}
+
 /** Monotone cubic (Fritsch–Carlson) — SA-like smooth lines without overshoot. */
 function monotoneCubicPath(pts) {
   const n = pts.length;
@@ -7508,7 +7527,7 @@ function renderAccrualsChart(d) {
     return Math.max(2, Number((100 - (v / 100) * 96).toFixed(2)));
   }
   function xPos(i) {
-    return Number(((i + 0.5) / slotCount * 1000).toFixed(2));
+    return Number(slotEndX(i, slotCount).toFixed(2));
   }
 
   function linePtsZeroBaseline(data, yFn) {
@@ -7529,18 +7548,19 @@ function renderAccrualsChart(d) {
     return pts;
   }
 
-  function applySmoothPath(el, pts) {
+  function applySmoothPath(el, pts, pathFn) {
     if (!el) return;
     el.removeAttribute('points');
-    el.setAttribute('d', monotoneCubicPath(pts));
+    el.setAttribute('d', (pathFn || monotoneCubicPath)(pts));
   }
 
-  function applySmoothPathSegments(el, segments, segClass, style) {
+  function applySmoothPathSegments(el, segments, segClass, style, pathFn) {
     if (!el) return;
+    const toPath = pathFn || monotoneCubicPath;
     const parent = el.parentNode;
     parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
     el.removeAttribute('points');
-    el.setAttribute('d', segments[0] ? monotoneCubicPath(segments[0]) : '');
+    el.setAttribute('d', segments[0] ? toPath(segments[0]) : '');
     segments.slice(1).forEach(pts => {
       const seg = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       seg.setAttribute('fill', 'none');
@@ -7551,14 +7571,14 @@ function renderAccrualsChart(d) {
       seg.setAttribute('stroke-linejoin', 'round');
       seg.setAttribute('opacity', style.opacity);
       if (style.dasharray) seg.setAttribute('stroke-dasharray', style.dasharray);
-      seg.setAttribute('d', monotoneCubicPath(pts));
+      seg.setAttribute('d', toPath(pts));
       seg.classList.add(segClass);
       parent.insertBefore(seg, el.nextSibling);
     });
   }
 
   const setLine = (id, data, yFn) => {
-    applySmoothPath(document.getElementById(id), linePtsZeroBaseline(data, yFn));
+    applySmoothPath(document.getElementById(id), linePtsZeroBaseline(data, yFn), linearPath);
   };
 
   function setGridLine(id, data, yFn, segClass) {
@@ -7566,7 +7586,7 @@ function renderAccrualsChart(d) {
     if (!el) return;
     const parent = el.parentNode;
     parent.querySelectorAll('.' + segClass).forEach(n => n.remove());
-    applySmoothPath(el, linePtsZeroBaseline(data, yFn));
+    applySmoothPath(el, linePtsZeroBaseline(data, yFn), linearPath);
   }
 
   /** PV: hide only night zeros (before first / after last production > 0).
@@ -7585,7 +7605,7 @@ function renderAccrualsChart(d) {
       }
     }
     if (first < 0) {
-      applySmoothPathSegments(el, [], segClass, style);
+      applySmoothPathSegments(el, [], segClass, style, linearPath);
       return;
     }
     let segment = [];
@@ -7611,7 +7631,7 @@ function renderAccrualsChart(d) {
       segment.push({ x: xPos(i), y: Number(y) });
     }
     if (segment.length) segments.push(segment);
-    applySmoothPathSegments(el, segments, segClass, style);
+    applySmoothPathSegments(el, segments, segClass, style, linearPath);
   }
 
   /** Grid export only: draw positive bursts; rise from / return to zero only when
@@ -7672,7 +7692,7 @@ function renderAccrualsChart(d) {
       segments.push(segment);
     }
 
-    applySmoothPathSegments(el, segments, segClass, style);
+    applySmoothPathSegments(el, segments, segClass, style, linearPath);
   }
 
   // PV: continuous after sunrise; night zeros only (before first / after last > 0).
