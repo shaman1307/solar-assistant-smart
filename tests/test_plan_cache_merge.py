@@ -1019,3 +1019,143 @@ def test_write_guard_absorbs_newly_frozen_q3():
     assert all(s["from_actual"] for s in h19["q15"])
     assert float(h19["q15"][3]["grid_import"]) == pytest.approx(1.4)
 
+
+def test_write_guard_fills_missing_rce_on_frozen_hour():
+    """Frozen past hour keeps meters; RCE holes fill from this tick's incoming row."""
+    from src.plan_cache_merge import guard_future_quarters_on_write
+
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 8, 22, 20, 15, tzinfo=tz)
+    hist = _row(19, locked=True)
+    hist["plan_date"] = "2026-08-22"
+    hist["history_hour"] = True
+    hist["rce_price"] = None
+    hist["rce_q15"] = [None, None, None, None]
+    incoming_hist = copy.deepcopy(hist)
+    incoming_hist["rce_q15"] = [0.6795, 0.7344, 0.805, 0.8473]
+    incoming_hist["rce_price"] = 0.7666
+    existing = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 20,
+        "history_rows": [hist],
+        "rows": [_row(20)],
+    }
+    existing["rows"][0]["plan_date"] = "2026-08-22"
+    incoming = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 20,
+        "history_rows": [incoming_hist],
+        "rows": [_row(20)],
+        "delta_kwh": 0.0,
+    }
+    incoming["rows"][0]["plan_date"] = "2026-08-22"
+    guarded = guard_future_quarters_on_write(incoming, existing, now=now)
+    h19 = next(r for r in guarded["history_rows"] if int(r["hour"]) == 19)
+    assert h19["rce_q15"] == [0.6795, 0.7344, 0.805, 0.8473]
+    assert h19["rce_price"] == pytest.approx(0.7666)
+
+
+def test_copy_future_keeps_rce_when_fresh_is_empty():
+    from src.plan_cache_merge import _copy_future_row, _keep_rce_if_incoming_empty
+
+    existing = _row(21)
+    existing["rce_q15"] = [0.7, 0.71, 0.72, 0.73]
+    existing["rce_price"] = 0.715
+    fresh = copy.deepcopy(existing)
+    fresh["rce_q15"] = [None, None, None, None]
+    fresh["rce_price"] = None
+    dst = copy.deepcopy(existing)
+    _copy_future_row(dst, fresh)
+    _keep_rce_if_incoming_empty(dst, existing)
+    assert dst["rce_q15"] == [0.7, 0.71, 0.72, 0.73]
+    assert dst["rce_price"] == pytest.approx(0.715)
+
+
+def test_merge_fills_rce_hole_on_history_from_fresh():
+    """Frozen history keeps meters; empty RCE fills from this tick's history row."""
+    now = datetime(2026, 8, 22, 20, 15, tzinfo=ZoneInfo("Europe/Warsaw"))
+    hist = _row(19, timer="Dis 19:00-19:45", locked=True)
+    hist["plan_date"] = "2026-08-22"
+    hist["start"] = "22-08-2026 20:00"
+    hist["history_hour"] = True
+    hist["rce_price"] = None
+    hist["rce_q15"] = [None, None, None, None]
+    hist["grid_export"] = 1.2
+    fresh_hist = copy.deepcopy(hist)
+    fresh_hist["timer_schedule"] = "CHANGED"
+    fresh_hist["rce_q15"] = [0.6795, 0.7344, 0.805, 0.8473]
+    fresh_hist["rce_price"] = 0.7666
+    existing = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 20,
+        "history_rows": [hist],
+        "rows": [_row(20, locked=True)],
+    }
+    existing["rows"][0]["plan_date"] = "2026-08-22"
+    existing["rows"][0]["start"] = "22-08-2026 21:00"
+    fresh = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 20,
+        "delta_kwh": 0.0,
+        "history_rows": [fresh_hist],
+        "rows": [_row(20), _row(21)],
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-08-22"
+        r["start"] = f"22-08-2026 {int(r['hour']) + 1:02d}:00"
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h19 = next(r for r in merged["history_rows"] if int(r["hour"]) == 19)
+    assert h19["timer_schedule"] == "Dis 19:00-19:45"
+    assert h19["rce_q15"] == [0.6795, 0.7344, 0.805, 0.8473]
+    assert h19["rce_price"] == pytest.approx(0.7666)
+
+
+def test_merge_fills_rce_on_current_hour_from_fresh():
+    now = datetime(2026, 8, 22, 19, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+    cur = _row(19, timer="Dis 19:00-19:45", locked=True)
+    cur["plan_date"] = "2026-08-22"
+    cur["start"] = "22-08-2026 20:00"
+    cur["rce_price"] = None
+    cur["rce_q15"] = [None, None, None, None]
+    fresh_cur = copy.deepcopy(cur)
+    fresh_cur["timer_schedule"] = ""
+    fresh_cur["rce_q15"] = [0.6795, 0.7344, 0.805, 0.8473]
+    fresh_cur["rce_price"] = 0.7666
+    existing = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 19,
+        "history_rows": [],
+        "rows": [cur],
+    }
+    fresh = {
+        "today_date": "2026-08-22",
+        "plan_from_hour": 19,
+        "delta_kwh": 0.0,
+        "history_rows": [],
+        "rows": [fresh_cur, _row(20)],
+    }
+    fresh["rows"][1]["plan_date"] = "2026-08-22"
+    fresh["rows"][1]["start"] = "22-08-2026 21:00"
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h19 = next(r for r in merged["rows"] if int(r["hour"]) == 19)
+    assert h19["timer_schedule"] == "Dis 19:00-19:45"
+    assert h19["rce_q15"] == [0.6795, 0.7344, 0.805, 0.8473]
+    assert h19["rce_price"] == pytest.approx(0.7666)
+
+
+def test_apply_actual_quarter_keeps_planned_rce():
+    cfg = _cfg()
+    row = _row(8)
+    row["rce_q15"] = [0.42, 0.43, 0.44, 0.45]
+    row["q15"][0]["rce"] = 0.42
+    series = _make_series_10min(pv_kwh_per_q=0.5, load_kwh_per_q=0.2, hour=8)
+    _apply_actual_quarter_if_needed(
+        row, 8, 0,
+        series_10min=series,
+        today_hourly=None,
+        cfg=cfg,
+        battery_cap=20.0,
+    )
+    assert row["q15"][0]["from_actual"] is True
+    assert row["q15"][0]["rce"] == pytest.approx(0.42)
+

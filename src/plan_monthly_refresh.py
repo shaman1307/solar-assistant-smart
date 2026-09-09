@@ -14,7 +14,7 @@ from .plan_deposits import (
     run_deposit_cascade,
 )
 from .plan_monthly_history import build_month_history
-from .plan_simulation import reprice_all_stored_ea_g12
+from .plan_simulation import backfill_all_stored_ea_rce, reprice_all_stored_ea_g12
 from .sqlite_store import (
     load_month_history,
     read_cached_deposit_total,
@@ -120,11 +120,13 @@ async def rebuild_all_month_history(cfg: dict, *, today: date | None = None) -> 
     write_cached_deposit_total(deposit_total, open_month)
     write_month_history_daily_date(today.isoformat())
     ea_g12 = reprice_all_stored_ea_g12(cfg)
+    ea_rce = backfill_all_stored_ea_rce(cfg)
     log.info(
-        "month_history full rebuild through %s deposit_total=%.2f ea_archives=%s",
+        "month_history full rebuild through %s deposit_total=%.2f ea_archives=%s ea_rce=%s",
         open_month,
         deposit_total,
         ea_g12.get("archives_repriced"),
+        ea_rce.get("archives_filled"),
     )
     return {
         "ok": True,
@@ -132,6 +134,7 @@ async def rebuild_all_month_history(cfg: dict, *, today: date | None = None) -> 
         "deposit_total": deposit_total,
         "errors": errors,
         "ea_g12": ea_g12,
+        "ea_rce": ea_rce,
     }
 
 

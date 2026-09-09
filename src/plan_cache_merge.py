@@ -269,6 +269,7 @@ def _build_actual_q15_slot(
     series_10min: dict[str, list[float | None]] | None,
     soc_start_kwh: float,
     cfg: dict,
+    rce: float | None = None,
 ) -> dict[str, Any]:
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     min_soc_pct = plan_min_soc_pct(cfg)
@@ -288,7 +289,7 @@ def _build_actual_q15_slot(
     soc_pct = meter_pct if meter_pct is not None else _bound_soc_pct(
         (soc_kwh / battery_cap) * 100.0
     )
-    return {
+    slot = {
         "quarter": quarter,
         "production": round(pv, 4),
         "consumption": round(load, 4),
@@ -298,6 +299,9 @@ def _build_actual_q15_slot(
         "grid_export": grid_export,
         "from_actual": True,
     }
+    if rce is not None:
+        slot["rce"] = rce
+    return slot
 
 
 def _apply_actual_quarter_if_needed(
@@ -352,12 +356,17 @@ def _apply_actual_quarter_if_needed(
                 battery_cap=battery_cap,
             )
 
+    planned_rce = q15[quarter].get("rce") if isinstance(q15[quarter], dict) else None
+    hour_rce = list(row.get("rce_q15") or [])
+    if planned_rce is None and quarter < len(hour_rce):
+        planned_rce = hour_rce[quarter]
     q15[quarter] = _build_actual_q15_slot(
         hour,
         quarter,
         series_10min=series_10min,
         soc_start_kwh=soc_kwh,
         cfg=cfg,
+        rce=planned_rce,
     )
     row["q15"] = q15
     apply_q15_physics_to_row(row, q15)
@@ -872,6 +881,15 @@ def merge_incremental_plan(
     if fixed:
         log.info("History q15 finalized from Influx for %d past hour(s)", fixed)
 
+    fresh_hist_by = {
+        _row_key(r): r for r in (fresh.get("history_rows") or [])
+        if r.get("start") != "TOTAL"
+    }
+    for hrow in history:
+        src = fresh_hist_by.get(_row_key(hrow))
+        if src is not None:
+            _absorb_incoming_rce(hrow, src, cfg=cfg)
+
     out_rows: list[dict[str, Any]] = []
     for key, fresh_row in sorted(fresh_by_key.items(), key=lambda x: (x[0][0], x[0][1])):
         plan_date, hour = key
@@ -925,6 +943,7 @@ def merge_incremental_plan(
                 battery_cap=battery_cap,
                 live_soc_kwh=live_soc_kwh if live_soc_kwh is not None else 0.0,
             )
+            _absorb_incoming_rce(row, fresh_row, cfg=cfg)
             # Violet live-SOC highlight: always the in-progress hour.
             row["soc_blended"] = True
             # Locked Dis stays for the hour. Locked Chg may be dropped when the
@@ -936,6 +955,7 @@ def merge_incremental_plan(
 
         # Future hours (today after current, and tomorrow): live optimizer row.
         _copy_future_row(row, fresh_row)
+        _keep_rce_if_incoming_empty(row, existing_row)
         row.pop("soc_blended", None)
         if _should_preserve_imminent_chg(
             existing_row,
@@ -1265,6 +1285,59 @@ def _absorb_incoming_q15_actuals(dst: dict[str, Any], src: dict[str, Any]) -> bo
     return changed
 
 
+def _rce_q15_incomplete(row: dict[str, Any] | None) -> bool:
+    qs = list((row or {}).get("rce_q15") or [])
+    return len(qs) < Q15_PER_HOUR or any(v is None for v in qs[:Q15_PER_HOUR])
+
+
+def _absorb_incoming_rce(
+    dst: dict[str, Any],
+    src: dict[str, Any],
+    cfg: dict | None = None,
+) -> bool:
+    """Fill missing RCE on a frozen hour from this tick's plan row."""
+    src_q = list(src.get("rce_q15") or [])
+    while len(src_q) < Q15_PER_HOUR:
+        src_q.append(None)
+    dst_q = list(dst.get("rce_q15") or [])
+    while len(dst_q) < Q15_PER_HOUR:
+        dst_q.append(None)
+    new_q: list[float | None] = []
+    changed = False
+    for i in range(Q15_PER_HOUR):
+        if dst_q[i] is not None:
+            new_q.append(dst_q[i])
+            continue
+        if src_q[i] is None:
+            new_q.append(None)
+            continue
+        new_q.append(round(float(src_q[i]), 4))
+        changed = True
+    if not changed:
+        return False
+    dst["rce_q15"] = new_q
+    vals = [float(v) for v in new_q if v is not None]
+    dst["rce_price"] = round(sum(vals) / len(vals), 4) if vals else None
+    slots = dst.get("q15")
+    if isinstance(slots, list):
+        for i, slot in enumerate(slots[:Q15_PER_HOUR]):
+            if isinstance(slot, dict) and slot.get("rce") is None and new_q[i] is not None:
+                slot["rce"] = new_q[i]
+    from .grid_config import merge_grid_defaults
+    refresh_row_grid_cash(dst, cfg if cfg is not None else merge_grid_defaults({}))
+    return True
+
+
+def _keep_rce_if_incoming_empty(dst: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Keep stored RCE when the fresh plan row has no prices this tick."""
+    if not _rce_q15_incomplete(dst):
+        return
+    src_q = list(existing.get("rce_q15") or [])
+    if not any(v is not None for v in src_q):
+        return
+    _absorb_incoming_rce(dst, existing)
+
+
 def guard_future_quarters_on_write(
     incoming: dict[str, Any],
     existing: dict[str, Any] | None,
@@ -1334,6 +1407,7 @@ def guard_future_quarters_on_write(
                 for hrow in history:
                     if _row_key(hrow) == (plan_date, hour):
                         _absorb_incoming_q15_actuals(hrow, row)
+                        _absorb_incoming_rce(hrow, row)
                         break
                 continue
             history.append(_as_history_row(row))

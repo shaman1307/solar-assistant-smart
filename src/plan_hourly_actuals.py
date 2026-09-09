@@ -198,6 +198,100 @@ def reprice_history_rows_to_current_g12(
     return out, changed
 
 
+def _hour_rce_mean(quarters: list[float | None]) -> float | None:
+    vals = [float(v) for v in quarters if v is not None]
+    return round(sum(vals) / len(vals), 4) if vals else None
+
+
+def backfill_history_rows_rce(
+    rows: list[dict[str, Any]],
+    quarters_by_date: dict[str, list[float | None]],
+    cfg: dict,
+) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
+    """Fill missing EA hour RCE quarters from PSE; recompute hour cash."""
+    filled: list[tuple[str, int]] = []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("start") or "") == "TOTAL":
+            out.append(row)
+            continue
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour"))
+        except (TypeError, ValueError):
+            out.append(row)
+            continue
+        if not plan_date:
+            out.append(row)
+            continue
+        series = quarters_by_date.get(plan_date) or []
+        c0 = hour * 4
+        pse_q = list(series[c0:c0 + 4])
+        while len(pse_q) < 4:
+            pse_q.append(None)
+        stored = list(row.get("rce_q15") or [])
+        while len(stored) < 4:
+            stored.append(None)
+        new_q: list[float | None] = []
+        hour_filled = False
+        for i in range(4):
+            if stored[i] is not None:
+                new_q.append(round(float(stored[i]), 4))
+                continue
+            if pse_q[i] is None:
+                new_q.append(None)
+                continue
+            new_q.append(round(float(pse_q[i]), 4))
+            hour_filled = True
+        if not hour_filled:
+            out.append(row)
+            continue
+        new_row = dict(row)
+        new_row["rce_q15"] = new_q
+        rce_price = _hour_rce_mean(new_q)
+        new_row["rce_price"] = rce_price
+        slots = new_row.get("q15")
+        if isinstance(slots, list) and len(slots) == 4:
+            patched: list[Any] = []
+            for i, slot in enumerate(slots):
+                if isinstance(slot, dict) and slot.get("rce") is None and new_q[i] is not None:
+                    slot = dict(slot)
+                    slot["rce"] = new_q[i]
+                patched.append(slot)
+            new_row["q15"] = patched
+        zone = str(new_row.get("g12_zone") or "offpeak")
+        buy = float(new_row.get("buy_price") or 0.0)
+        cash = hour_meter_cash_pln(
+            float(new_row.get("grid_import") or 0.0),
+            float(new_row.get("grid_export") or 0.0),
+            buy,
+            rce_price,
+            cfg,
+            g12_zone=zone,
+        )
+        new_row["import_cost"] = cash["import_cost"]
+        new_row["export_revenue"] = cash["export_revenue"]
+        new_row["energy_cost"] = cash["energy_cost"]
+        new_row["service_cost"] = cash["service_cost"]
+        new_row["cost"] = cash["cost"]
+        new_row["export_credit"] = cash["export_credit"]
+        new_row["import_energy_cost"] = cash.get("import_energy_cost")
+        filled.append((plan_date, hour))
+        out.append(new_row)
+    return out, filled
+
+
+def history_rows_have_rce_holes(rows: list[dict[str, Any]] | None) -> bool:
+    """True when any hour is missing a 15-min RCE slot."""
+    for row in rows or []:
+        if str(row.get("start") or "") == "TOTAL":
+            continue
+        qs = list(row.get("rce_q15") or [])
+        if len(qs) < 4 or any(v is None for v in qs):
+            return True
+    return False
+
+
 def hour_start_soc_kwh(
     hourly: dict[str, list[float | None]] | None,
     hour: int,

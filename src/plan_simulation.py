@@ -45,7 +45,9 @@ from .sqlite_store import (
 from .timer_plan import build_hourly_schedule
 from .plan_cost import compute_plan_totals
 from .plan_hourly_actuals import (
+    backfill_history_rows_rce,
     build_completed_history_rows,
+    history_rows_have_rce_holes,
     overlay_meter_soc_on_rows,
     reprice_history_rows_to_current_g12,
 )
@@ -663,6 +665,83 @@ def reprice_all_stored_ea_g12(cfg: dict) -> dict[str, Any]:
     }
 
 
+def apply_rce_backfill_to_ea_payload(
+    payload: dict[str, Any],
+    quarters_by_date: dict[str, list[float | None]],
+    cfg: dict,
+) -> tuple[dict[str, Any], list[tuple[str, int]]]:
+    """Fill missing RCE on stored EA rows from PSE quarters; recompute totals."""
+    out = dict(payload)
+    hist, hist_filled = backfill_history_rows_rce(
+        list(out.get("history_rows") or []), quarters_by_date, cfg,
+    )
+    live, live_filled = backfill_history_rows_rce(
+        list(out.get("rows") or []), quarters_by_date, cfg,
+    )
+    out["history_rows"] = hist
+    out["rows"] = live
+    filled = hist_filled + live_filled
+    if filled:
+        day_rows = [
+            r for r in hist + live
+            if str(r.get("start") or "") != "TOTAL"
+        ]
+        if day_rows:
+            out["totals"] = compute_plan_totals(day_rows)
+    return out, filled
+
+
+def _payload_rce_dates(payload: dict[str, Any]) -> list[str]:
+    dates: set[str] = set()
+    for r in list(payload.get("history_rows") or []) + list(payload.get("rows") or []):
+        day = str(r.get("plan_date") or "")
+        if day:
+            dates.add(day)
+    return sorted(dates)
+
+
+def backfill_all_stored_ea_rce(cfg: dict) -> dict[str, Any]:
+    """Fill missing RCE in every plan_day_archive and plan_latest from PSE."""
+    cfg = merge_simulation_defaults(cfg)
+    days = list(list_plan_day_archives(limit=None))
+    plan = read_plan()
+    fetch_dates = list(days)
+    if plan:
+        fetch_dates.extend(_payload_rce_dates(plan))
+    fetch_dates = sorted({d for d in fetch_dates if d})
+    quarters: dict[str, list[float | None]] = {}
+    if fetch_dates:
+        quarters = rce_mod.quarter_rce_for_dates(*fetch_dates)
+    archives_filled: dict[str, list[int]] = {}
+    checked = 0
+    for day in days:
+        payload = load_plan_day_archive(day)
+        checked += 1
+        if not payload:
+            continue
+        out, filled = apply_rce_backfill_to_ea_payload(payload, quarters, cfg)
+        if filled:
+            save_plan_day_archive(day, out)
+            archives_filled[day] = [h for d, h in filled]
+    live_filled: list[tuple[str, int]] = []
+    if plan:
+        out, filled = apply_rce_backfill_to_ea_payload(plan, quarters, cfg)
+        if filled:
+            replace_plan_latest_payload(out)
+            live_filled = filled
+    log.info(
+        "EA RCE backfill archives checked=%s days_filled=%s live=%s",
+        checked,
+        list(archives_filled),
+        live_filled,
+    )
+    return {
+        "archives_checked": checked,
+        "archives_filled": archives_filled,
+        "plan_latest_filled": live_filled,
+    }
+
+
 async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     """Read-only EA day view for a past Warsaw date.
 
@@ -673,6 +752,12 @@ async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     archived = load_plan_day_archive(date_str)
     if archived and (archived.get("history_rows") or archived.get("rows")):
         out, changed = apply_current_g12_to_ea_payload(archived, cfg)
+        if history_rows_have_rce_holes(out.get("history_rows")) or history_rows_have_rce_holes(
+            out.get("rows"),
+        ):
+            quarters = await rce_mod.get_quarter_rce_for_dates(date_str)
+            out, rce_filled = apply_rce_backfill_to_ea_payload(out, quarters, cfg)
+            changed = changed or bool(rce_filled)
         if changed:
             save_plan_day_archive(date_str, out)
         out["today_date"] = date_str
