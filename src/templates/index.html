@@ -313,6 +313,14 @@
     .sim-table-month .mh-bg-import-part.mh-bg-import-part--first {
       box-shadow: inset 2px 0 0 #d1d5db;
     }
+    .sim-table-month .mh-import-split {
+      color: #6b7280;
+      background-color: #f3f4f6;
+    }
+    .sim-table-month thead th.mh-import-split {
+      font-weight: 500;
+      font-size: 0.92em;
+    }
     .sim-table-month .mh-bg-energy-total,
     .sim-table-month .mh-bg-import-total {
       background-color: #f3f4f6;
@@ -322,7 +330,8 @@
     .sim-table-month tr.bg-gray-100 .mh-bg-import-tariff,
     .sim-table-month tr.bg-gray-100 .mh-bg-energy-total,
     .sim-table-month tr.bg-gray-100 .mh-bg-import-part,
-    .sim-table-month tr.bg-gray-100 .mh-bg-import-total {
+    .sim-table-month tr.bg-gray-100 .mh-bg-import-total,
+    .sim-table-month tr.bg-gray-100 .mh-import-split {
       background-color: #ececec;
     }
     .sim-table-month tr.bg-gray-100 .mh-bg-energy-total,
@@ -2763,13 +2772,13 @@
           <div>
             <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (PLN/kWh brutto)</label>
             <input name="grid.g12.peak_price_pln_kwh" id="inp-peak-price" type="number" step="0.0001" required
-              title="Peak hours: weekdays 06–13, 15–22"
+              title="Peak hours from config: 06–13 and 15–22 every day (G12); weekdays only (G12w)"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-red-500" />
           </div>
           <div>
             <label class="text-xs text-gray-500 block mb-1 text-green-400">Off-peak (PLN/kWh brutto)</label>
             <input name="grid.g12.offpeak_price_pln_kwh" id="inp-offpeak-price" type="number" step="0.0001" required
-              title="Off-peak: nights 22–06, 13–15, weekends"
+              title="Off-peak: 22–06 and 13–15 every day; G12w also Saturday and Sunday"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-green-500" />
           </div>
         </div>
@@ -3292,7 +3301,7 @@
       <div class="sim-history-head-controls">
         <button type="button" id="history-month-import-cols-toggle"
           class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-          title="Show or hide Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
+          title="Show or hide Grid imp High/Low (parts of Grid import kWh), Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
         <button type="button" id="history-month-dis-cols-toggle"
           class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
           title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
@@ -3308,7 +3317,9 @@
       <table class="sim-table sim-table-month sim-month-import-collapsed sim-month-dis-collapsed">
         <colgroup>
           <col class="sim-col-day">
-          <col class="sim-col-kwh" span="4">
+          <col class="sim-col-kwh" span="3">
+          <col class="sim-col-kwh mh-col-import-detail" span="2">
+          <col class="sim-col-kwh">
           <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost">
@@ -3324,6 +3335,8 @@
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Production<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Consumption<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid import<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-import-split mh-col-import-detail" title="Peak-zone part of Grid import (kWh)">Grid imp High<br><span class="font-normal">kWh</span></th>
+            <th class="font-medium text-right mh-import-split mh-col-import-detail" title="Off-peak-zone part of Grid import (kWh)">Grid imp Low<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid export<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="RCE Cost (PLN)">Energy Export<br><span class="font-normal">RCE</span></th>
             <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Tariff Cost (PLN)">Energy Import<br><span class="font-normal">Tariff</span></th>
@@ -3364,11 +3377,11 @@ Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal"
           </tr>
         </thead>
         <tbody id="history-month-body-total">
-          <tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
+          <tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
         </tbody>
         <tbody id="history-month-toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="19" class="px-3 py-2">
+            <td colspan="21" class="px-3 py-2">
               <button type="button" id="history-month-btn" onclick="toggleHistoryMonthDays()"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Daily breakdown ▼</button>
             </td>
@@ -3560,21 +3573,19 @@ function acrPriceYMaxPln() {
   return g12PeakPricePln() * 2;
 }
 const CHART_G12_BG_OPACITY = 0.32;
-/** Energa G12 weekday peak windows (hour ranges, start inclusive, end exclusive). */
-const G12_PEAK_HOURS_WEEKDAY = [[6, 13], [15, 22]];
 
 function g12PeakPricePln() {
   const v = configData?.grid?.g12?.peak_price_pln_kwh
     ?? buyTariffData?.peak_price_pln_kwh;
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n : 1.2444;
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function g12OffpeakPricePln() {
   const v = configData?.grid?.g12?.offpeak_price_pln_kwh
     ?? buyTariffData?.offpeak_price_pln_kwh;
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n : 0.6229;
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function g12ZoneBgColor(zone) {
@@ -6050,12 +6061,12 @@ const TARIFF_PRESETS = {
   'G12': {
     name: 'Energa G12',
     peak: 1.2444, offpeak: 0.6229,
-    peakHoursLabel: 'weekdays 06-13, 15-22',
+    peakHoursLabel: 'every day 06-13, 15-22',
   },
   'G12w': {
     name: 'Energa G12w',
     peak: 1.3100, offpeak: 0.6109,
-    peakHoursLabel: 'weekdays 06-13, 15-22 (nights+weekends cheaper)',
+    peakHoursLabel: 'weekdays 06-13, 15-22; Saturday and Sunday offpeak',
   },
   'G11': {
     name: 'Energa G11',
@@ -6228,16 +6239,25 @@ function tariffRceSlotTs(slot) {
   return new Date(`${slot.date}T${slot.time}:00`).getTime();
 }
 
+function g12PeakHoursFromConfig() {
+  const raw = configData?.grid?.g12?.peak_hours_weekday;
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** Chart fallback: same rule as get_g12_zone — windows from config; G12 every day. */
 function getG12ZoneForSlot(dateStr, timeStr) {
-  const dt = new Date(`${dateStr}T${timeStr}:00`);
-  const jsDay = dt.getDay();
-  const weekday = jsDay === 0 ? 6 : jsDay - 1;
-  if (weekday >= 5) return 'offpeak';
   const hour = parseInt(timeStr.slice(0, 2), 10);
-  for (const [start, end] of G12_PEAK_HOURS_WEEKDAY) {
-    if (hour >= start && hour < end) return 'peak';
+  const inPeak = g12PeakHoursFromConfig().some(
+    ([start, end]) => hour >= start && hour < end,
+  );
+  if (!inPeak) return 'offpeak';
+  if (g12TariffChartPrefix() === 'G12w') {
+    const dt = new Date(`${dateStr}T${timeStr}:00`);
+    const jsDay = dt.getDay();
+    const weekday = jsDay === 0 ? 6 : jsDay - 1;
+    if (weekday >= 5) return 'offpeak';
   }
-  return 'offpeak';
+  return 'peak';
 }
 
 function buildBuyHourMap(buyRows) {
@@ -8955,6 +8975,8 @@ function makeHistoryMonthRow(r, isTotal) {
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.production, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.consumption, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_import, 2)}</td>
+    <td class="text-right tabular-nums mh-import-split mh-col-import-detail">${fmt(r.grid_import_peak, 2)}</td>
+    <td class="text-right tabular-nums mh-import-split mh-col-import-detail">${fmt(r.grid_import_offpeak, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums mh-bg-import-part">${fmt(r.grid_export, 2)}</td>
     <td class="text-right tabular-nums mh-bg-export mh-col-import-detail ${exportCls}" title="${exportTitle}">${simEnergyFmt(exportVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-tariff mh-col-import-detail ${importCls}" title="${importTitle}">${simCashFmt(importVal)}</td>
@@ -9094,11 +9116,11 @@ function renderHistoryMonthTable(data) {
   }
 
   if (data.error) {
-    bodyTotal.innerHTML = `<tr><td colspan="19" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
+    bodyTotal.innerHTML = `<tr><td colspan="21" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
     return;
   }
   if (!data.rows || !data.rows.length) {
-    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
     return;
   }
 
@@ -9125,7 +9147,7 @@ function toggleHistoryMonthDays() {
 }
 
 const HISTORY_MONTH_CACHE_KEY = 'sa_history_month_v13';
-const HISTORY_MONTH_BILLING_MODEL = '16';
+const HISTORY_MONTH_BILLING_MODEL = '{{ billing_model_version }}';
 
 function historyMonthCacheDay() {
   return DEBUG_TODAY;
@@ -9242,7 +9264,7 @@ async function loadHistoryMonth() {
       bodyDays.classList.add('hidden');
     }
     if (toggleEl) toggleEl.classList.add('hidden');
-    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
     return;
   }
   const cached = getCachedHistoryMonth(month);
@@ -9250,12 +9272,12 @@ async function loadHistoryMonth() {
     renderHistoryMonthTable(cached);
     return;
   }
-  bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
+  bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
   try {
     const data = await fetchHistoryMonthCached(month);
     renderHistoryMonthTable(data);
   } catch (e) {
-    bodyTotal.innerHTML = '<tr><td colspan="19" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
+    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
   }
 }
 

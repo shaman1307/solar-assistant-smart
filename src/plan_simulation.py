@@ -34,10 +34,21 @@ from .simulation_config import (
     merge_simulation_defaults,
     plan_min_soc_pct,
 )
-from .sqlite_store import load_plan_day_archive, read_plan, write_plan
+from .sqlite_store import (
+    list_plan_day_archives,
+    load_plan_day_archive,
+    read_plan,
+    replace_plan_latest_payload,
+    save_plan_day_archive,
+    write_plan,
+)
 from .timer_plan import build_hourly_schedule
 from .plan_cost import compute_plan_totals
-from .plan_hourly_actuals import build_completed_history_rows, overlay_meter_soc_on_rows
+from .plan_hourly_actuals import (
+    build_completed_history_rows,
+    overlay_meter_soc_on_rows,
+    reprice_history_rows_to_current_g12,
+)
 
 log = logging.getLogger(__name__)
 
@@ -278,7 +289,7 @@ def _compute_buy_tariff_rows(cfg: dict) -> list[dict[str, Any]]:
     """Build hourly buy-tariff rows from config (G12 zones) over the simulation horizon."""
     from datetime import timedelta
 
-    from .simulation import get_buy_price
+    from .g12_pricing import get_buy_price
     from .simulation_config import get_simulation_params
 
     steps = int(get_simulation_params(cfg)["horizon_hours"])
@@ -595,6 +606,63 @@ async def hourly_plan_refresh(
         return result
 
 
+def apply_current_g12_to_ea_payload(
+    payload: dict[str, Any],
+    cfg: dict,
+) -> tuple[dict[str, Any], bool]:
+    """Reprice Buy Price / Energy Cost on stored EA rows from current G12/G12w."""
+    out = dict(payload)
+    hist, hist_changed = reprice_history_rows_to_current_g12(
+        list(out.get("history_rows") or []), cfg,
+    )
+    live, live_changed = reprice_history_rows_to_current_g12(
+        list(out.get("rows") or []), cfg,
+    )
+    out["history_rows"] = hist
+    out["rows"] = live
+    day_rows = [
+        r for r in hist + live
+        if str(r.get("start") or "") != "TOTAL"
+    ]
+    if day_rows:
+        out["totals"] = compute_plan_totals(day_rows)
+    return out, hist_changed or live_changed
+
+
+def reprice_all_stored_ea_g12(cfg: dict) -> dict[str, Any]:
+    """Reprice every plan_day_archive and plan_latest EA cash to current G12."""
+    cfg = merge_simulation_defaults(cfg)
+    checked = 0
+    repriced: list[str] = []
+    for day in list_plan_day_archives(limit=None):
+        payload = load_plan_day_archive(day)
+        checked += 1
+        if not payload:
+            continue
+        out, changed = apply_current_g12_to_ea_payload(payload, cfg)
+        if changed:
+            save_plan_day_archive(day, out)
+            repriced.append(day)
+    live_changed = False
+    plan = read_plan()
+    if plan:
+        out, changed = apply_current_g12_to_ea_payload(plan, cfg)
+        if changed:
+            replace_plan_latest_payload(out)
+            live_changed = True
+    log.info(
+        "EA G12 reprice archives checked=%s changed=%s live=%s",
+        checked,
+        len(repriced),
+        live_changed,
+    )
+    return {
+        "archives_checked": checked,
+        "archives_repriced": repriced,
+        "plan_latest_repriced": live_changed,
+    }
+
+
 async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     """Read-only EA day view for a past Warsaw date.
 
@@ -604,7 +672,9 @@ async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     cfg = merge_simulation_defaults(cfg)
     archived = load_plan_day_archive(date_str)
     if archived and (archived.get("history_rows") or archived.get("rows")):
-        out = dict(archived)
+        out, changed = apply_current_g12_to_ea_payload(archived, cfg)
+        if changed:
+            save_plan_day_archive(date_str, out)
         out["today_date"] = date_str
         out["history_view"] = True
         out["history_source"] = "archive"

@@ -383,6 +383,24 @@ def read_plan() -> dict[str, Any] | None:
         return None
 
 
+def replace_plan_latest_payload(plan: dict[str, Any]) -> None:
+    """Replace plan_latest JSON as-is. No freeze-guard. Datapatch only."""
+    payload = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO plan_latest(id, payload_json, updated_at)
+            VALUES(1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (payload, _now_iso()),
+        )
+        conn.commit()
+
+
 def write_plan(plan: dict[str, Any], *, now: datetime | None = None) -> None:
     """Sole writer for Energy arbitrage plan (plan_latest).
 
@@ -522,18 +540,23 @@ def load_plan_day_archive(day: str) -> dict[str, Any] | None:
     return data
 
 
-def list_plan_day_archives(limit: int = 90) -> list[str]:
-    """Newest-first list of archived EA days."""
+def list_plan_day_archives(limit: int | None = None) -> list[str]:
+    """Archived EA days, newest first. ``limit`` None = all days."""
     with _lock:
         conn = _connect()
-        rows = conn.execute(
-            """
-            SELECT day FROM plan_day_archive
-            ORDER BY day DESC
-            LIMIT ?
-            """,
-            (max(1, int(limit)),),
-        ).fetchall()
+        if limit is None:
+            rows = conn.execute(
+                "SELECT day FROM plan_day_archive ORDER BY day DESC",
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT day FROM plan_day_archive
+                ORDER BY day DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
     return [str(r["day"]) for r in rows]
 
 

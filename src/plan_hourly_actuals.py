@@ -151,6 +151,53 @@ def _row_from_hourly_actual(
     }
 
 
+def reprice_history_rows_to_current_g12(
+    rows: list[dict[str, Any]],
+    cfg: dict,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Set stored EA hour buy zone from current G12/G12w; recompute hour cash."""
+    changed = False
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("start") or "") == "TOTAL":
+            out.append(row)
+            continue
+        plan_date = str(row.get("plan_date") or "")
+        try:
+            hour = int(row.get("hour"))
+        except (TypeError, ValueError):
+            out.append(row)
+            continue
+        if not plan_date:
+            out.append(row)
+            continue
+        dt = datetime.strptime(plan_date, "%Y-%m-%d").replace(hour=hour)
+        buy_price, zone = get_buy_price(dt, cfg)
+        new_row = dict(row)
+        priced = round(buy_price, 4)
+        if new_row.get("buy_price") != priced or new_row.get("g12_zone") != zone:
+            changed = True
+        new_row["buy_price"] = priced
+        new_row["g12_zone"] = zone
+        cash = hour_meter_cash_pln(
+            float(new_row.get("grid_import") or 0.0),
+            float(new_row.get("grid_export") or 0.0),
+            buy_price,
+            new_row.get("rce_price"),
+            cfg,
+            g12_zone=zone,
+        )
+        new_row["import_cost"] = cash["import_cost"]
+        new_row["export_revenue"] = cash["export_revenue"]
+        new_row["energy_cost"] = cash["energy_cost"]
+        new_row["service_cost"] = cash["service_cost"]
+        new_row["cost"] = cash["cost"]
+        new_row["export_credit"] = cash["export_credit"]
+        new_row["import_energy_cost"] = cash.get("import_energy_cost")
+        out.append(new_row)
+    return out, changed
+
+
 def hour_start_soc_kwh(
     hourly: dict[str, list[float | None]] | None,
     hour: int,

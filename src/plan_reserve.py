@@ -14,7 +14,7 @@ from .plan_physics import (
 )
 
 HOURS_PER_DAY = 24
-# Calendar AM bound only when that day has no peak hours at all (e.g. weekend).
+# Calendar AM bound only when that day has no peak hours at all (e.g. G12w weekend).
 _ALL_OFFPEAK_COVER_HOUR_END = 12
 
 def morning_cover_bound_from_hour_buys(
@@ -30,7 +30,7 @@ def morning_cover_bound_from_hour_buys(
     - one block starting before noon → its end;
     - one block starting late (evening only, e.g. truncated series) → its start
       so evening PV does not look like morning cover;
-    - all offpeak (weekend) → None.
+    - all offpeak (G12w weekend) → None.
     """
     n = min(HOURS_PER_DAY, len(hour_buys))
     if n <= 0:

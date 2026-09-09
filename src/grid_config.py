@@ -7,7 +7,10 @@ from typing import Any
 VAT_BRUTTO_MULTIPLIER = 1.23
 
 # Bump when billing formulas change (invalidates cached month_history).
-BILLING_MODEL_VERSION = "16"
+BILLING_MODEL_VERSION = "17"
+
+# Clock peak windows (start inclusive, end exclusive). G12 uses them every day.
+DEFAULT_PEAK_HOURS = [[6, 13], [15, 22]]
 
 # Official Energa G12 distribution tariff (invoice table 2 — ROZLICZENIE DYSTRYBUCJI).
 # All values netto from invoice × VAT_BRUTTO_MULTIPLIER, PLN brutto, 4 dp.
@@ -30,6 +33,8 @@ def merge_grid_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
     grid = cfg.setdefault("grid", {})
     g12 = grid.setdefault("g12", {})
     g12.setdefault("tariff_name", "G12")
+    g12.setdefault("tariff_preset", "G12")
+    g12.setdefault("peak_hours_weekday", [list(p) for p in DEFAULT_PEAK_HOURS])
     g12.setdefault("peak_price_pln_kwh", 1.0)
     g12.setdefault("offpeak_price_pln_kwh", 0.5)
     g12.setdefault("peak_energy_only_pln_kwh", 0.6)
