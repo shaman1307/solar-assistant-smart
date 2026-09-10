@@ -41,49 +41,67 @@ def _etas(params: dict, **overrides: float) -> dict[str, float]:
     return out
 
 
-def test_pv_load_split_is_ac_meter_arithmetic():
-    """PV/load series are AC meters — no second eta_pv_load conversion."""
-    deficit, surplus = pv_load_energy_split(2.0, 2.0, eta_pv_load=0.925)
-    assert deficit == 0.0
-    assert surplus == 0.0
+def test_pv_load_split_load_first_uses_eta():
+    """Equal PV and load: house still needs load/eta of PV (Load first)."""
+    eta = 0.925
+    deficit, surplus = pv_load_energy_split(2.0, 2.0, eta_pv_load=eta)
+    assert deficit == pytest.approx(2.0 - 2.0 * eta, abs=1e-9)
+    assert surplus == pytest.approx(0.0, abs=1e-9)
 
 
 def test_pv_load_split_exact_cover():
-    deficit, surplus = pv_load_energy_split(2.0, 2.0, eta_pv_load=0.925)
+    eta = 0.925
+    pv = 2.0 / eta
+    deficit, surplus = pv_load_energy_split(pv, 2.0, eta_pv_load=eta)
     assert deficit == pytest.approx(0.0, abs=1e-9)
     assert surplus == pytest.approx(0.0, abs=1e-9)
 
 
 def test_pv_load_split_surplus_and_deficit():
-    deficit, surplus = pv_load_energy_split(3.0, 1.0, eta_pv_load=0.925)
+    eta = 0.925
+    deficit, surplus = pv_load_energy_split(3.0, 1.0, eta_pv_load=eta)
     assert deficit == 0.0
-    assert surplus == pytest.approx(2.0)
-    deficit, surplus = pv_load_energy_split(0.5, 2.0, eta_pv_load=0.925)
-    assert deficit == pytest.approx(1.5)
+    assert surplus == pytest.approx(3.0 - 1.0 / eta, abs=1e-9)
+    deficit, surplus = pv_load_energy_split(0.5, 2.0, eta_pv_load=eta)
+    assert deficit == pytest.approx(2.0 - 0.5 * eta, abs=1e-9)
     assert surplus == 0.0
 
 
-def test_simulate_hour_pv_to_load_balanced_when_equal():
-    """Equal AC PV and load: no battery withdraw regardless of eta_pv_load."""
+def test_simulate_hour_eta_1_equal_pv_load_no_battery():
+    """eta_pv_load=1: equal PV and load leave the battery untouched."""
     params = get_simulation_params(_cfg())
     min_kwh = 43.0 * 0.15
-
-    without_loss = simulate_hour(
+    phys = simulate_hour(
         20.0, 2.0, 2.0, HourControl(0.0, 0.0),
         battery_cap=43.0, min_kwh=min_kwh, ac_cap_kw=8.0,
         epsilon=0.05,
         **_etas(params, eta_pv_load=1.0),
     )
-    with_loss = simulate_hour(
-        20.0, 2.0, 2.0, HourControl(0.0, 0.0),
-        battery_cap=43.0, min_kwh=min_kwh, ac_cap_kw=8.0,
+    assert phys.grid_import == 0.0
+    assert phys.battery_delta == pytest.approx(0.0, abs=1e-9)
+
+
+def test_simulate_hour_load_first_then_pv_to_battery():
+    """House takes load/eta of PV; leftover × eta_pv_battery lands in SOC."""
+    params = get_simulation_params(_cfg())
+    eta_load = float(params["eta_pv_load"])
+    eta_bat = float(params["eta_pv_battery"])
+    min_kwh = 43.0 * 0.15
+    soc0 = 0.16 * 43.0
+    pv = 44.7
+    load = 8.0
+    phys = simulate_hour(
+        soc0, pv, load, HourControl(0.0, 0.0),
+        battery_cap=43.0, min_kwh=min_kwh, ac_cap_kw=12.0,
         epsilon=0.05,
         **_etas(params),
     )
-    assert without_loss.grid_import == 0.0
-    assert with_loss.grid_import == 0.0
-    assert without_loss.battery_delta == pytest.approx(0.0, abs=1e-9)
-    assert with_loss.battery_delta == pytest.approx(0.0, abs=1e-9)
+    surplus = pv - load / eta_load
+    stored = surplus * eta_bat
+    assert phys.battery_delta == pytest.approx(stored, abs=1e-6)
+    assert phys.soc_end == pytest.approx(soc0 + stored, abs=1e-6)
+    pct = (phys.soc_end / 43.0) * 100.0
+    assert pct == pytest.approx(16.0 + stored / 43.0 * 100.0, abs=1e-6)
 
 
 def test_simulate_hour_pv_to_battery_applies_loss():

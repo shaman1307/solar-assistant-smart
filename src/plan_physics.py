@@ -24,15 +24,20 @@ def pv_load_energy_split(
     *,
     eta_pv_load: float,
 ) -> tuple[float, float]:
-    """Split AC-meter PV vs AC load into deficit and surplus for battery/export.
+    """Load-first split: PV covers house through eta_pv_load; leftover is surplus.
 
-    Plan PV/load series are already AC (inverter / house meter). Do not apply
-    ``eta_pv_load`` as a second conversion — that double-counts and inflates
-    SOC on PV→battery. ``eta_pv_load <= 0`` still means ignore PV (full deficit).
+    Return (ac_deficit, pv_surplus). Serving AC load takes ``load / eta_pv_load``
+    of PV; leftover PV is surplus for battery/export. ``eta_pv_load <= 0``:
+    PV does not serve load (full deficit, all PV as surplus).
     """
+    pv = max(0.0, float(pv))
+    load = max(0.0, float(load))
     if eta_pv_load <= 0:
-        return max(0.0, load), max(0.0, pv)
-    return max(0.0, load - pv), max(0.0, pv - load)
+        return load, pv
+    needed = load / eta_pv_load
+    if pv >= needed:
+        return 0.0, pv - needed
+    return load - pv * eta_pv_load, 0.0
 
 
 def eps_step_kwh(epsilon: float, step_scale: float) -> float:
@@ -98,7 +103,7 @@ def simulate_hour(
     reserve_soc_kwh: float | None = None,
     discharge_dc_cap_kwh: float | None = None,
 ) -> HourPhysics:
-    """One step: AC-meter PV vs AC load; PV→battery applies eta_pv_battery.
+    """One step: Load-first PV (eta_pv_load), leftover PV→battery (eta_pv_battery).
 
     ``ac_cap_kw`` is inverter AC headroom this step (export bus).
     ``discharge_dc_cap_kwh`` caps total battery DC withdraw (load + export);

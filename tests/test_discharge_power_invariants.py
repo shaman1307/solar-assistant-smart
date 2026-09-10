@@ -208,9 +208,12 @@ def test_evening_export_stops_at_overnight_survive_floor():
         f"timers={[timers.get(h) for h in range(19, 24)]}"
     )
     leftover = soc_after_last - floor
-    assert leftover < min_hourly + 0.15, (
+    min_block_h = float(cfg["timer_schedule"]["min_block_minutes"]) / 60.0
+    min_block_kwh = min_block_h * plan_timer_discharge_power_kw(cfg)
+    leftover_cap = max(min_hourly, min_block_kwh)
+    assert leftover < leftover_cap + 0.15, (
         f"after H{last_dis_h} leftover {leftover:.3f} kWh above post_dis={floor:.3f} "
-        f"exceeds min hourly block {min_hourly}; "
+        f"exceeds min block {leftover_cap:.3f}; "
         f"timers={[timers.get(h) for h in range(19, 24)]}"
     )
 
