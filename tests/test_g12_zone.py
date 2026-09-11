@@ -40,12 +40,18 @@ def test_g12w_monday_daytime_is_peak():
     assert get_g12_zone(dt, _cfg("G12w")) == "peak"
 
 
-def test_g12_uses_peak_windows_from_config():
+def test_g12_uses_hardcoded_preset_windows():
     cfg = merge_grid_defaults({
         "grid": {"g12": {"tariff_preset": "G12", "peak_hours_weekday": [[7, 13]]}},
     })
-    assert get_g12_zone(datetime(2026, 8, 1, 6, 0), cfg) == "offpeak"
+    assert get_g12_zone(datetime(2026, 8, 1, 6, 0), cfg) == "peak"
     assert get_g12_zone(datetime(2026, 8, 1, 7, 0), cfg) == "peak"
+    assert get_g12_zone(datetime(2026, 8, 1, 13, 0), cfg) == "offpeak"
+
+
+def test_g11_has_no_peak_hours():
+    dt = datetime(2026, 8, 3, 10, 0)
+    assert get_g12_zone(dt, _cfg("G11")) == "offpeak"
 
 
 def test_get_buy_price_reads_config_rates():
@@ -64,6 +70,54 @@ def test_get_buy_price_reads_config_rates():
     off, zone_o = get_buy_price(datetime(2026, 8, 1, 14, 0), cfg)
     assert zone_p == "peak" and peak == 1.2444
     assert zone_o == "offpeak" and off == 0.6229
+
+
+def test_g12_hours_for_dates_g12_windows():
+    from src.g12_pricing import g12_hours_for_dates
+
+    cfg = merge_grid_defaults({
+        "grid": {
+            "g12": {
+                "tariff_preset": "G12",
+                "peak_price_pln_kwh": 1.2444,
+                "offpeak_price_pln_kwh": 0.6229,
+            },
+        },
+    })
+    rows = g12_hours_for_dates(["2026-09-11"], cfg)
+    assert len(rows) == 24
+    by_h = {r["hour"]: r for r in rows}
+    assert by_h[5]["zone"] == "offpeak"
+    assert by_h[6]["zone"] == "peak" and by_h[6]["buy_price"] == 1.2444
+    assert by_h[12]["zone"] == "peak"
+    assert by_h[13]["zone"] == "offpeak"
+    assert by_h[14]["zone"] == "offpeak"
+    assert by_h[15]["zone"] == "peak"
+    assert by_h[21]["zone"] == "peak"
+    assert by_h[22]["zone"] == "offpeak" and by_h[22]["buy_price"] == 0.6229
+
+
+def test_rce_attach_g12_hours_today_tomorrow(monkeypatch):
+    from src import rce as rce_mod
+
+    cfg = merge_grid_defaults({
+        "grid": {
+            "g12": {
+                "tariff_preset": "G12",
+                "peak_price_pln_kwh": 1.2444,
+                "offpeak_price_pln_kwh": 0.6229,
+            },
+        },
+    })
+    monkeypatch.setattr("src.config.load_config", lambda: cfg)
+    data = {"dates": {"today": "2026-09-11", "tomorrow": "2026-09-12"}}
+    out = rce_mod._attach_g12_hours(data)
+    assert len(out["g12_hours"]) == 48
+    by = {(r["date"], r["hour"]): r for r in out["g12_hours"]}
+    assert by[("2026-09-11", 6)]["zone"] == "peak"
+    assert by[("2026-09-11", 13)]["zone"] == "offpeak"
+    assert by[("2026-09-11", 15)]["zone"] == "peak"
+    assert by[("2026-09-11", 22)]["zone"] == "offpeak"
 
 
 def test_reprice_saturday_archive_row_uses_g12_peak():

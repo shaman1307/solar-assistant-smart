@@ -41,19 +41,7 @@ def _hourly_slot(
     return None
 
 
-def _completed_hourly(
-    plan_hour_start: datetime,
-    today_hourly: dict[str, list[float | None]] | None,
-    prev_day_hourly: dict[str, list[float | None]] | None,
-) -> tuple[datetime, dict[str, list[float | None]] | None]:
-    """Calendar hour and Influx bucket for the last full hour before plan_hour_start."""
-    completed_dt = plan_hour_start - timedelta(hours=1)
-    if completed_dt.date() == plan_hour_start.date():
-        return completed_dt, today_hourly
-    return completed_dt, prev_day_hourly
-
-
-def _row_from_hourly_actual(
+def build_meter_hour_row(
     hour_dt: datetime,
     hourly: dict[str, list[float | None]],
     *,
@@ -61,23 +49,38 @@ def _row_from_hourly_actual(
     params: dict[str, float | int],
     rce_price: float | None,
     plan_date: str,
+    meter_hour: int | None = None,
+    production: float | None = None,
+    consumption: float | None = None,
     rce_q15: list[float | None] | None = None,
+    timer_schedule: str = "",
+    require_pv_or_load: bool = True,
+    include_q15: bool = True,
+    extra_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """One completed hour from Influx hourly accruals."""
-    h = hour_dt.hour
-    pv_h = _hourly_slot(hourly, h, "pv")
-    load_h = _hourly_slot(hourly, h, "load")
-    if pv_h is None and load_h is None:
+    """One hour from Influx meter series (EA history / H0 carryover)."""
+    h_meter = hour_dt.hour if meter_hour is None else int(meter_hour)
+    pv_h = _hourly_slot(hourly, h_meter, "pv")
+    load_h = _hourly_slot(hourly, h_meter, "load")
+    bat_in = _hourly_slot(hourly, h_meter, "bat_charge")
+    bat_out = _hourly_slot(hourly, h_meter, "bat_discharge")
+    grid_buy_h = _hourly_slot(hourly, h_meter, "grid_buy")
+    grid_sell_h = _hourly_slot(hourly, h_meter, "grid_sell")
+    soc_h = _hourly_slot(hourly, h_meter, "soc")
+
+    if require_pv_or_load and pv_h is None and load_h is None:
+        return None
+    if not require_pv_or_load and all(
+        v is None for v in (bat_in, bat_out, grid_buy_h, grid_sell_h, soc_h)
+    ):
         return None
 
-    bat_in = _hourly_slot(hourly, h, "bat_charge")
-    bat_out = _hourly_slot(hourly, h, "bat_discharge")
-    grid_buy_h = _hourly_slot(hourly, h, "grid_buy")
-    grid_sell_h = _hourly_slot(hourly, h, "grid_sell")
-    soc_h = _hourly_slot(hourly, h, "soc")
-
-    pv = float(pv_h) if pv_h is not None else 0.0
-    load = float(load_h) if load_h is not None else 0.0
+    pv = float(production) if production is not None else (
+        float(pv_h) if pv_h is not None else 0.0
+    )
+    load = float(consumption) if consumption is not None else (
+        float(load_h) if load_h is not None else 0.0
+    )
     min_soc_pct = float(params["min_soc_pct"])
 
     if bat_in is not None or bat_out is not None:
@@ -108,12 +111,14 @@ def _row_from_hourly_actual(
         grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
     )
 
-    battery_cap = float(cfg["battery"]["capacity_kwh"])
-    q15 = build_history_hour_q15(
-        h, hourly, battery_cap=battery_cap, min_soc_pct=min_soc_pct,
-        bat_in_kwh=bat_in_kwh, bat_out_kwh=bat_out_kwh,
-        grid_import=grid_import, grid_export=grid_export,
-    )
+    q15: list[dict[str, Any]] = []
+    if include_q15:
+        battery_cap = float(cfg["battery"]["capacity_kwh"])
+        q15 = build_history_hour_q15(
+            h_meter, hourly, battery_cap=battery_cap, min_soc_pct=min_soc_pct,
+            bat_in_kwh=bat_in_kwh, bat_out_kwh=bat_out_kwh,
+            grid_import=grid_import, grid_export=grid_export,
+        )
     if soc_h is not None:
         soc_pct = _bound_soc_pct(float(soc_h))
     elif q15:
@@ -121,11 +126,10 @@ def _row_from_hourly_actual(
     else:
         soc_pct = 0.0
 
-    return {
-        "hour": h,
+    row: dict[str, Any] = {
+        "hour": hour_dt.hour,
         "plan_date": plan_date,
         "start": interval_end_label(hour_dt),
-        "q15": q15,
         "production": round(pv, 3),
         "consumption": round(load, 3),
         "battery": round(battery_delta, 3),
@@ -140,15 +144,19 @@ def _row_from_hourly_actual(
         "service_cost": cash["service_cost"],
         "cost": cash["cost"],
         "action": action,
-        "timer_schedule": "",
+        "timer_schedule": timer_schedule,
         "rce_price": round(rce_price, 4) if rce_price is not None else None,
-        "rce_q15": list(rce_q15) if rce_q15 else None,
         "export_credit": cash["export_credit"],
         "g12_zone": g12_zone,
         "buy_price": round(buy_price, 4),
         "export_planned": False,
-        "history_hour": True,
     }
+    if include_q15:
+        row["q15"] = q15
+        row["rce_q15"] = list(rce_q15) if rce_q15 else None
+    if extra_flags:
+        row.update(extra_flags)
+    return row
 
 
 def reprice_history_rows_to_current_g12(
@@ -418,73 +426,18 @@ def build_h0_carryover_row(
     timer_schedule: str = "",
 ) -> dict[str, Any] | None:
     """Fallback first row at 00:00–01:00 when smart plan slots are unavailable."""
-    prev_h = 23
-    bat_in = _hourly_slot(prev_day_hourly, prev_h, "bat_charge")
-    bat_out = _hourly_slot(prev_day_hourly, prev_h, "bat_discharge")
-    grid_buy_h = _hourly_slot(prev_day_hourly, prev_h, "grid_buy")
-    grid_sell_h = _hourly_slot(prev_day_hourly, prev_h, "grid_sell")
-    soc_h = _hourly_slot(prev_day_hourly, prev_h, "soc")
-
-    if all(v is None for v in (bat_in, bat_out, grid_buy_h, grid_sell_h, soc_h)):
-        return None
-
-    if soc_h is not None:
-        soc_pct = _bound_soc_pct(float(soc_h))
-    else:
-        soc_pct = 0.0
-
-    bat_in_kwh = float(bat_in or 0.0)
-    bat_out_kwh = float(bat_out or 0.0)
-    battery_delta = bat_in_kwh - bat_out_kwh
-
-    epsilon = float(params["epsilon_kwh"])
-    grid_import = abs(float(grid_buy_h)) if grid_buy_h is not None and grid_buy_h < 0 else 0.0
-    grid_export = float(grid_sell_h) if grid_sell_h is not None and grid_sell_h > 0 else 0.0
-    if grid_import <= 0.0 and grid_export <= 0.0 and (bat_in is not None or bat_out is not None):
-        grid_import, grid_export = derive_grid_flows_from_balance(
-            forecast_pv, forecast_load, battery_delta, epsilon=epsilon,
-        )
-
     hour_dt = datetime.strptime(plan_date, "%Y-%m-%d").replace(hour=0)
-    buy_price, g12_zone = get_buy_price(hour_dt, cfg)
-    action = classify_action(
-        bat_charge=bat_in_kwh,
-        bat_discharge=bat_out_kwh,
-        grid_import=grid_import,
-        grid_export=grid_export,
+    return build_meter_hour_row(
+        hour_dt, prev_day_hourly,
+        cfg=cfg, params=params, rce_price=rce_price, plan_date=plan_date,
+        meter_hour=23,
         production=forecast_pv,
-        epsilon=epsilon,
+        consumption=forecast_load,
+        timer_schedule=timer_schedule,
+        require_pv_or_load=False,
+        include_q15=False,
+        extra_flags={"carryover_hour": True},
     )
-    cash = hour_meter_cash_pln(
-        grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
-    )
-
-    return {
-        "hour": 0,
-        "plan_date": plan_date,
-        "start": interval_end_label(hour_dt),
-        "production": round(forecast_pv, 3),
-        "consumption": round(forecast_load, 3),
-        "battery": round(battery_delta, 3),
-        "bat_charge": round(bat_in_kwh, 3),
-        "bat_discharge": round(bat_out_kwh, 3),
-        "grid_import": round(grid_import, 3),
-        "grid_export": round(grid_export, 3),
-        "soc": round(soc_pct, 1),
-        "import_cost": cash["import_cost"],
-        "export_revenue": cash["export_revenue"],
-        "energy_cost": cash["energy_cost"],
-        "service_cost": cash["service_cost"],
-        "cost": cash["cost"],
-        "action": action,
-        "timer_schedule": timer_schedule,
-        "rce_price": round(rce_price, 4) if rce_price is not None else None,
-        "export_credit": cash["export_credit"],
-        "g12_zone": g12_zone,
-        "buy_price": round(buy_price, 4),
-        "export_planned": False,
-        "carryover_hour": True,
-    }
 
 
 def build_completed_history_rows(
@@ -514,10 +467,11 @@ def build_completed_history_rows(
             round(sum(hour_rce_vals) / len(hour_rce_vals), 4)
             if hour_rce_vals else None
         )
-        row = _row_from_hourly_actual(
+        row = build_meter_hour_row(
             dt, today_hourly,
             cfg=cfg, params=params, rce_price=rce_price, plan_date=plan_date,
             rce_q15=hour_rce_q15,
+            extra_flags={"history_hour": True},
         )
         if row:
             rows.append(row)
@@ -1759,104 +1713,3 @@ def apply_current_hour_blend(
     pv_out[hour] = pv_b
     load_out[hour] = load_b
     return pv_out, load_out
-
-
-def build_actual_hour_row(
-    plan_hour_start: datetime,
-    *,
-    forecast_pv: float,
-    forecast_load: float,
-    today_hourly: dict[str, list[float | None]] | None,
-    prev_day_hourly: dict[str, list[float | None]] | None = None,
-    live_metrics: dict[str, Any],
-    cfg: dict,
-    params: dict[str, float | int],
-    rce_price: float | None,
-    now: datetime,
-) -> dict[str, Any]:
-    """Build first plan row: last complete hour actuals, label = plan_hour_start."""
-    completed_dt, hourly = _completed_hourly(
-        plan_hour_start, today_hourly, prev_day_hourly,
-    )
-    data_hour = completed_dt.hour
-
-    pv_h = _hourly_slot(hourly, data_hour, "pv")
-    load_h = _hourly_slot(hourly, data_hour, "load")
-    bat_in = _hourly_slot(hourly, data_hour, "bat_charge")
-    bat_out = _hourly_slot(hourly, data_hour, "bat_discharge")
-    grid_buy_h = _hourly_slot(hourly, data_hour, "grid_buy")
-    grid_sell_h = _hourly_slot(hourly, data_hour, "grid_sell")
-    soc_h = _hourly_slot(hourly, data_hour, "soc")
-
-    pv = float(pv_h) if pv_h is not None else 0.0
-    load = float(load_h) if load_h is not None else 0.0
-
-    battery_cap = float(cfg["battery"]["capacity_kwh"])
-    live_raw = live_metrics.get("battery_soc")
-    if live_raw is not None:
-        live_soc_pct = _bound_soc_pct(float(live_raw))
-    else:
-        live_soc_pct = None
-    soc_kwh = ((live_soc_pct if live_soc_pct is not None else 0.0) / 100.0) * battery_cap
-
-    if soc_h is not None:
-        soc_pct = _bound_soc_pct(float(soc_h))
-    elif live_soc_pct is not None:
-        soc_pct = live_soc_pct
-    else:
-        soc_pct = 0.0
-
-    if bat_in is not None or bat_out is not None:
-        battery_delta = float(bat_in or 0.0) - float(bat_out or 0.0)
-    else:
-        battery_delta = 0.0
-
-    epsilon = float(params["epsilon_kwh"])
-    grid_import = abs(float(grid_buy_h)) if grid_buy_h is not None and grid_buy_h < 0 else 0.0
-    grid_export = float(grid_sell_h) if grid_sell_h is not None and grid_sell_h > 0 else 0.0
-    if grid_import <= 0.0 and grid_export <= 0.0 and (bat_in is not None or bat_out is not None):
-        grid_import, grid_export = derive_grid_flows_from_balance(
-            pv, load, battery_delta, epsilon=epsilon,
-        )
-
-    buy_price, g12_zone = get_buy_price(completed_dt, cfg)
-
-    bat_in_kwh = float(bat_in or 0.0)
-    bat_out_kwh = float(bat_out or 0.0)
-    action = classify_action(
-        bat_charge=bat_in_kwh,
-        bat_discharge=bat_out_kwh,
-        grid_import=grid_import,
-        grid_export=grid_export,
-        production=pv,
-        epsilon=epsilon,
-    )
-    cash = hour_meter_cash_pln(
-        grid_import, grid_export, buy_price, rce_price, cfg, g12_zone=g12_zone,
-    )
-
-    return {
-        "hour": plan_hour_start.hour,
-        "start": interval_end_label(plan_hour_start),
-        "production": round(pv, 3),
-        "consumption": round(load, 3),
-        "battery": round(battery_delta, 3),
-        "bat_charge": round(bat_in_kwh, 3),
-        "bat_discharge": round(bat_out_kwh, 3),
-        "grid_import": round(grid_import, 3),
-        "grid_export": round(grid_export, 3),
-        "soc": round(soc_pct, 1),
-        "import_cost": cash["import_cost"],
-        "export_revenue": cash["export_revenue"],
-        "energy_cost": cash["energy_cost"],
-        "service_cost": cash["service_cost"],
-        "cost": cash["cost"],
-        "action": action,
-        "rce_price": round(rce_price, 4) if rce_price is not None else None,
-        "export_credit": cash["export_credit"],
-        "g12_zone": g12_zone,
-        "buy_price": round(buy_price, 4),
-        "export_planned": False,
-        "actual_hour": True,
-        "soc_kwh": soc_kwh,
-    }

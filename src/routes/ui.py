@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..config import load_config
+from ..g12_pricing import TARIFF_PRESETS
 from ..grid_config import BILLING_MODEL_VERSION
 from ..influxdb import now_warsaw
 from ..simulation_config import simulation_form_defaults
@@ -72,6 +73,7 @@ def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLRespo
         "solar_power_priority_options": _solar_power_priority_options_for_template(),
         "simulation_form_defaults": simulation_form_defaults(),
         "billing_model_version": BILLING_MODEL_VERSION,
+        "tariff_presets": TARIFF_PRESETS,
     }
     # Try TemplateResponse(request, name, context); on TypeError use (name, context).
     try:

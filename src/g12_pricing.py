@@ -1,10 +1,39 @@
-"""G12 Energa buy-zone pricing (peak / offpeak) from config."""
+"""G12 Energa buy-zone pricing (peak / offpeak) from hardcoded presets."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from .grid_config import merge_grid_defaults
+
+# Sole G12 zone table (start inclusive, end exclusive). UI injects this as TARIFF_PRESETS.
+TARIFF_PRESETS: dict[str, dict[str, Any]] = {
+    "G12": {
+        "name": "Energa G12",
+        "peak": 1.2444,
+        "offpeak": 0.6229,
+        "peakHours": [[6, 13], [15, 22]],
+        "weekendOffpeak": False,
+        "peakHoursLabel": "every day 06-13, 15-22",
+    },
+    "G12w": {
+        "name": "Energa G12w",
+        "peak": 1.3100,
+        "offpeak": 0.6109,
+        "peakHours": [[6, 13], [15, 22]],
+        "weekendOffpeak": True,
+        "peakHoursLabel": "weekdays 06-13, 15-22; Saturday and Sunday offpeak",
+    },
+    "G11": {
+        "name": "Energa G11",
+        "peak": 1.1006,
+        "offpeak": 1.1006,
+        "peakHours": [],
+        "weekendOffpeak": False,
+        "peakHoursLabel": "no zones (flat rate)",
+    },
+}
 
 
 def g12_tariff_preset(cfg: dict) -> str:
@@ -23,14 +52,11 @@ def g12_tariff_preset(cfg: dict) -> str:
 
 
 def g12_peak_windows(cfg: dict) -> list[tuple[int, int]]:
-    """Peak clock windows from config (start inclusive, end exclusive)."""
+    """Peak clock windows for the selected tariff preset."""
     merge_grid_defaults(cfg)
-    raw = cfg["grid"]["g12"].get("peak_hours_weekday") or []
-    out: list[tuple[int, int]] = []
-    for pair in raw:
-        if isinstance(pair, (list, tuple)) and len(pair) >= 2:
-            out.append((int(pair[0]), int(pair[1])))
-    return out
+    preset = g12_tariff_preset(cfg)
+    info = TARIFF_PRESETS.get(preset, TARIFF_PRESETS["G12"])
+    return [(int(a), int(b)) for a, b in info.get("peakHours") or []]
 
 
 def _hour_in_peak_windows(hour: int, windows: list[tuple[int, int]]) -> bool:
@@ -40,15 +66,18 @@ def _hour_in_peak_windows(hour: int, windows: list[tuple[int, int]]) -> bool:
 def get_g12_zone(dt: datetime, cfg: dict) -> str:
     """Peak vs offpeak for the Warsaw clock hour that contains dt.
 
-    Read tariff_preset and peak_hours_weekday from config.
-    G12 / G11: peak windows every calendar day.
+    Zone windows come from TARIFF_PRESETS for tariff_preset.
+    G12: peak windows every calendar day.
     G12w: same windows Monday–Friday; Saturday and Sunday offpeak.
+    G11: no peak windows (flat rate).
     """
     merge_grid_defaults(cfg)
+    preset = g12_tariff_preset(cfg)
+    info = TARIFF_PRESETS.get(preset, TARIFF_PRESETS["G12"])
     windows = g12_peak_windows(cfg)
     if not _hour_in_peak_windows(dt.hour, windows):
         return "offpeak"
-    if g12_tariff_preset(cfg) == "G12w" and dt.weekday() >= 5:
+    if info.get("weekendOffpeak") and dt.weekday() >= 5:
         return "offpeak"
     return "peak"
 
@@ -60,6 +89,26 @@ def get_buy_price(dt: datetime, cfg: dict) -> tuple[float, str]:
     zone = get_g12_zone(dt, cfg)
     price = g12["peak_price_pln_kwh"] if zone == "peak" else g12["offpeak_price_pln_kwh"]
     return float(price), zone
+
+
+def g12_hours_for_dates(dates: list[str], cfg: dict) -> list[dict[str, Any]]:
+    """Hourly G12 zone and buy price for each YYYY-MM-DD date."""
+    merge_grid_defaults(cfg)
+    out: list[dict[str, Any]] = []
+    for date_str in dates:
+        if not date_str:
+            continue
+        base = datetime.strptime(date_str, "%Y-%m-%d")
+        for h in range(24):
+            dt = base.replace(hour=h)
+            price, zone = get_buy_price(dt, cfg)
+            out.append({
+                "date": date_str,
+                "hour": h,
+                "zone": zone,
+                "buy_price": round(price, 4),
+            })
+    return out
 
 
 def g12_buy_energy_price_pln_kwh(zone: str, cfg: dict) -> float:

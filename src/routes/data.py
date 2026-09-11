@@ -159,7 +159,7 @@ async def api_rce() -> dict[str, Any]:
     """Return hourly RCE prices for today and tomorrow from PSE."""
     stored_rce = read_plan_rce()
     if stored_rce is not None:
-        return stored_rce
+        return rce_mod.prepare_rce_payload(dict(stored_rce))
     return await rce_mod.get_rce_prices()
 
 

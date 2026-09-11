@@ -23,7 +23,6 @@ from .plan_dp import (
     EXPORT_MIN_FRAC,
     EXPORT_POWER_FRACS,
     control_options,
-    hourly_cash_pln,
     run_horizon_dp,
     tail_start_hour,
 )
@@ -101,7 +100,6 @@ __all__ = [
     "hour_rce_rating",
     "hour_rce_rating_5_groszy",
     "hourly_avg_rce",
-    "hourly_cash_pln",
     "morning_cover_bound_from_hour_buys",
     "offpeak_min_block_charge_is_worth",
     "optimization_battery_export_value",

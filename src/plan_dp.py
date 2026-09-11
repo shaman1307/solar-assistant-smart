@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
+from .g12_pricing import get_g12_zone
 from .grid_config import export_window_start_hour, grid_export_threshold_pln_kwh
 from .plan_charge import grid_charge_ac_kw
 from .plan_export import (
@@ -68,13 +69,27 @@ class HorizonDpResult:
     min_block_minutes: int
     skip_post: bool = False
 
-def hourly_cash_pln(
-    grid_import: float,
-    grid_export: float,
-    buy_brutto: float,
-    export_credit: float,
-) -> float:
-    return grid_import * buy_brutto - grid_export * export_credit
+
+def dp_step_clock(
+    today_date,
+    step: int,
+    *,
+    rce_step_offset: int,
+    slots_per_hour: int,
+) -> datetime:
+    """Warsaw clock at the start of a DP step hour bucket."""
+    if isinstance(today_date, datetime):
+        base = today_date.date()
+    elif isinstance(today_date, date):
+        base = today_date
+    else:
+        base = datetime.strptime(str(today_date)[:10], "%Y-%m-%d").date()
+    sph = max(1, int(slots_per_hour))
+    hour_index = (int(rce_step_offset) + int(step)) // sph
+    day_offset, hour = divmod(int(hour_index), 24)
+    return datetime.combine(base, datetime.min.time()) + timedelta(
+        days=day_offset, hours=hour,
+    )
 
 
 def _soc_bin(soc_kwh: float, min_kwh: float, bin_kwh: float) -> int:
@@ -291,8 +306,11 @@ def run_horizon_dp(
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
         # Charge/idle only in DP; battery export is assigned by hourly RCE rank after.
         allow_battery_export = False
-        # Same peak/offpeak split as charge_target (two discrete G12 buy rates).
-        g12_zone = "peak" if buy_p > offpeak_buy + eps_step else "offpeak"
+        clock = dp_step_clock(
+            today_date, step,
+            rce_step_offset=rce_step_offset, slots_per_hour=slots_per_hour,
+        )
+        g12_zone = get_g12_zone(clock, cfg)
 
         for soc_bin, cost_in in list(dp[step].items()):
             soc = soc_at[step].get(

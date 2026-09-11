@@ -168,19 +168,40 @@ def _refresh_current_price(data: dict[str, Any]) -> None:
     data["current_period"] = now.strftime("%Y-%m-%d %H:%M")
 
 
+def _attach_g12_hours(data: dict[str, Any]) -> dict[str, Any]:
+    """Add hourly G12 zone/buy_price for today and tomorrow from config."""
+    from .config import load_config
+    from .g12_pricing import g12_hours_for_dates
+
+    dates = data.get("dates") or {}
+    today = dates.get("today")
+    tomorrow = dates.get("tomorrow")
+    if not today:
+        now = now_warsaw()
+        today = now.strftime("%Y-%m-%d")
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    wanted = [d for d in (today, tomorrow) if d]
+    data["g12_hours"] = g12_hours_for_dates(wanted, load_config()) if wanted else []
+    return data
+
+
+def prepare_rce_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Refresh the live slot price and attach G12 hours for the UI."""
+    _refresh_current_price(data)
+    return _attach_g12_hours(data)
+
+
 def _get_prices_sync() -> dict[str, Any]:
     global _cache
     now_ts = time.time()
     if _cache.get("ts", 0) > now_ts - CACHE_TTL_S:
         data = dict(_cache["data"])
-        _refresh_current_price(data)
-        return data
+        return prepare_rce_payload(data)
 
     result = _fetch_and_build()
     if any(p is not None for p in result.get("today", [])):
         _cache = {"ts": now_ts, "data": result}
-    _refresh_current_price(result)
-    return result
+    return prepare_rce_payload(result)
 
 
 def _fetch_and_build() -> dict[str, Any]:

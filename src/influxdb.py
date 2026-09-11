@@ -1,13 +1,7 @@
-"""
-InfluxDB query module for daily energy accruals.
+"""InfluxDB query module for daily energy accruals.
 
 SA stores hourly energy in InfluxDB (port 8086, db=solar_assistant).
-Each "XXX hourly" measurement has a `combined` field in Wh per hour slot.
-Summing from Warsaw midnight (UTC-2h in summer) to now gives kWh for today.
-
-Pi clock runs in UTC.  SA timezone is Europe/Warsaw (UTC+2 CEST, UTC+1 CET).
-We detect the current offset via SA's reported local time or use a fixed +2h
-(simplification valid for June; correct both for CEST and CET within ±1 h).
+Pi clock is UTC; calendar days and hour buckets use Europe/Warsaw.
 """
 
 from __future__ import annotations
@@ -19,6 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -27,37 +22,46 @@ log = logging.getLogger(__name__)
 INFLUXDB_URL = os.environ.get("INFLUXDB_URL", "http://localhost:8086")
 INFLUXDB_DB  = "solar_assistant"
 CACHE_TTL_S  = 60   # refresh every minute
+WARSAW = ZoneInfo("Europe/Warsaw")
 
 _cache: dict[str, Any] = {}
 
-# Europe/Warsaw UTC offset: +2h CEST (late March – late October), +1h CET otherwise.
-# Pi clock is UTC.  Determine Warsaw local time to find Warsaw midnight in UTC.
-def _warsaw_offset_hours() -> int:
-    """Return current Warsaw UTC offset in whole hours (2 in summer, 1 in winter)."""
-    now_utc = datetime.now(timezone.utc)
-    # DST starts last Sunday of March, ends last Sunday of October.
-    year = now_utc.year
-    # Last Sunday of March
-    mar31 = datetime(year, 3, 31, 1, tzinfo=timezone.utc)
-    dst_start = mar31 - timedelta(days=mar31.weekday() + 1)
-    # Last Sunday of October
-    oct31 = datetime(year, 10, 31, 1, tzinfo=timezone.utc)
-    dst_end = oct31 - timedelta(days=oct31.weekday() + 1)
-    return 2 if dst_start <= now_utc < dst_end else 1
+
+def now_warsaw() -> datetime:
+    """Current Warsaw clock as a naive datetime."""
+    return datetime.now(WARSAW).replace(tzinfo=None)
 
 
 def _warsaw_midnight_utc() -> datetime:
-    """Return today's midnight in Warsaw time, expressed as UTC datetime."""
-    offset_h = _warsaw_offset_hours()
-    now_utc = datetime.now(timezone.utc)
-    now_warsaw = now_utc + timedelta(hours=offset_h)
-    midnight_warsaw = now_warsaw.replace(hour=0, minute=0, second=0, microsecond=0)
-    return midnight_warsaw - timedelta(hours=offset_h)  # back to UTC
+    """Today's Warsaw midnight as an aware UTC datetime."""
+    now_w = datetime.now(WARSAW)
+    midnight_w = now_w.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight_w.astimezone(timezone.utc)
 
 
-def now_warsaw() -> datetime:
-    """Current time in Warsaw timezone (naive)."""
-    return datetime.now(timezone.utc) + timedelta(hours=_warsaw_offset_hours())
+def _warsaw_day_bounds_utc(date_str: str) -> tuple[datetime, datetime]:
+    """UTC instants of [date 00:00, next day 00:00) in Warsaw."""
+    start_w = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=WARSAW)
+    end_w = start_w + timedelta(days=1)
+    return start_w.astimezone(timezone.utc), end_w.astimezone(timezone.utc)
+
+
+def _parse_influx_utc(ts: str) -> datetime | None:
+    try:
+        dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        try:
+            dt = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
+        except ValueError:
+            return None
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def _influx_ts_warsaw(ts: str) -> datetime | None:
+    dt_utc = _parse_influx_utc(ts)
+    if dt_utc is None:
+        return None
+    return dt_utc.astimezone(WARSAW)
 
 
 # ---------------------------------------------------------------------------
@@ -245,16 +249,11 @@ CHART_SLOT_MIN = 10
 SLOTS_CHART = 24 * 60 // CHART_SLOT_MIN  # 144 × 10-min buckets per Warsaw day
 
 
-def _warsaw_slot_index(ts: str, date_str: str, offset_h: int) -> int | None:
+def _warsaw_slot_index(ts: str, date_str: str) -> int | None:
     """Map Influx UTC bucket timestamp to 0..143 slot for a Warsaw calendar day."""
-    try:
-        dt_utc = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        try:
-            dt_utc = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
-        except ValueError:
-            return None
-    dt_w = dt_utc + timedelta(hours=offset_h)
+    dt_w = _influx_ts_warsaw(ts)
+    if dt_w is None:
+        return None
     if dt_w.strftime("%Y-%m-%d") != date_str:
         return None
     return (dt_w.hour * 60 + dt_w.minute) // CHART_SLOT_MIN
@@ -265,7 +264,6 @@ def _influx_chart_mean_kw(
     since: str,
     until: str,
     date_str: str,
-    offset_h: int,
 ) -> list[float | None]:
     """Mean power (kW) per chart bucket from a live SA watt measurement."""
     q = (
@@ -286,7 +284,7 @@ def _influx_chart_mean_kw(
             ts, val = row[ti], row[vi]
             if val is None:
                 continue
-            idx = _warsaw_slot_index(ts, date_str, offset_h)
+            idx = _warsaw_slot_index(ts, date_str)
             if idx is not None and 0 <= idx < SLOTS_CHART:
                 out[idx] = round(float(val) / 1000.0, 3)
     return out
@@ -296,7 +294,6 @@ def _influx_chart_soc(
     since: str,
     until: str,
     date_str: str,
-    offset_h: int,
 ) -> list[float | None]:
     """Last SOC (%) per chart bucket."""
     q = (
@@ -320,7 +317,7 @@ def _influx_chart_soc(
             ts, val = row[ti], row[vi]
             if val is None:
                 continue
-            idx = _warsaw_slot_index(ts, date_str, offset_h)
+            idx = _warsaw_slot_index(ts, date_str)
             if idx is not None and 0 <= idx < SLOTS_CHART:
                 out[idx] = round(float(val), 1)
     return out
@@ -445,16 +442,13 @@ def _hourly_kwh_to_chart_kw(hourly: list[float | None]) -> list[float | None]:
 
 def get_load_kwh_10min_for_date_sync(date_str: str) -> list[float] | None:
     """Energy kWh per 10-min Warsaw bucket for one calendar day (Load power)."""
-    offset_h = _warsaw_offset_hours()
     try:
-        midnight_warsaw = datetime.strptime(date_str, "%Y-%m-%d")
+        start_utc, end_utc = _warsaw_day_bounds_utc(date_str)
     except ValueError:
         return None
-    midnight_utc = midnight_warsaw - timedelta(hours=offset_h)
-    end_utc = midnight_utc + timedelta(days=1)
-    since = midnight_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
+    since = start_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
     until = end_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
-    kw_slots = _influx_chart_mean_kw("Load power", since, until, date_str, offset_h)
+    kw_slots = _influx_chart_mean_kw("Load power", since, until, date_str)
     if not any(v is not None for v in kw_slots):
         return None
     kwh_per_slot = CHART_SLOT_MIN / 60.0
@@ -465,22 +459,21 @@ def _query_day_chart_series(
     date_str: str,
     since: str,
     until: str,
-    offset_h: int,
     grid_buy_hourly: list[float | None],
     grid_sell_hourly: list[float | None],
 ) -> dict[str, list[float | None]]:
     """10-min PV/Load/Grid power (kW) + SOC for charts."""
-    pv = _influx_chart_mean_kw("PV power", since, until, date_str, offset_h)
-    load = _influx_chart_mean_kw("Load power", since, until, date_str, offset_h)
-    soc = _influx_chart_soc(since, until, date_str, offset_h)
-    grid_kw = _influx_chart_mean_kw("Grid power", since, until, date_str, offset_h)
+    pv = _influx_chart_mean_kw("PV power", since, until, date_str)
+    load = _influx_chart_mean_kw("Load power", since, until, date_str)
+    soc = _influx_chart_soc(since, until, date_str)
+    grid_kw = _influx_chart_mean_kw("Grid power", since, until, date_str)
     if any(v is not None for v in grid_kw):
         grid_buy, grid_sell = _split_grid_power_chart_kw(grid_kw)
     else:
         grid_buy = _hourly_kwh_to_chart_kw(grid_buy_hourly)
         grid_sell = _hourly_kwh_to_chart_kw(grid_sell_hourly)
 
-    bat_kw = _influx_chart_mean_kw("Battery power", since, until, date_str, offset_h)
+    bat_kw = _influx_chart_mean_kw("Battery power", since, until, date_str)
     if any(v is not None for v in bat_kw):
         bat_charge, bat_discharge = _split_battery_power_chart_kw(bat_kw)
     else:
@@ -530,15 +523,12 @@ def _get_day_sync(date_str: str) -> dict[str, Any]:
 
 def _query_day(date_str: str) -> dict[str, Any]:
     """Query InfluxDB for one Warsaw day and return totals + hourly kWh."""
-    offset_h = _warsaw_offset_hours()
     try:
-        midnight_warsaw = datetime.strptime(date_str, "%Y-%m-%d")
+        start_utc, end_utc = _warsaw_day_bounds_utc(date_str)
     except ValueError:
         return {"error": "invalid date"}
 
-    midnight_utc  = midnight_warsaw - timedelta(hours=offset_h)
-    end_utc       = midnight_utc + timedelta(days=1)
-    since = midnight_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
+    since = start_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
     until = end_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
 
     METRICS = {
@@ -573,8 +563,10 @@ def _query_day(date_str: str) -> dict[str, Any]:
                 if val is None:
                     continue
                 try:
-                    dt = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
-                    h = (dt.hour + offset_h) % 24
+                    dt_w = _influx_ts_warsaw(ts)
+                    if dt_w is None:
+                        continue
+                    h = dt_w.hour
                     kwh = float(val) / 1000.0
                     hourly[key][h] = round(kwh, 3)
                     total_wh += float(val)
@@ -625,8 +617,10 @@ def _query_day(date_str: str) -> dict[str, Any]:
             if val is None:
                 continue
             try:
-                dt = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
-                h = (dt.hour + offset_h) % 24
+                dt_w = _influx_ts_warsaw(ts)
+                if dt_w is None:
+                    continue
+                h = dt_w.hour
                 soc_val = round(float(val), 1)
                 hourly["soc"][h] = soc_val
                 latest_soc = soc_val
@@ -636,7 +630,7 @@ def _query_day(date_str: str) -> dict[str, Any]:
         totals["soc"] = latest_soc
 
     series_10min = _query_day_chart_series(
-        date_str, since, until, offset_h,
+        date_str, since, until,
         hourly["grid_buy"], hourly["grid_sell"],
     )
 
@@ -666,7 +660,7 @@ def _get_load_profile_sync() -> dict[str, Any]:
     return result
 
 
-def _rows_to_hourly_wh(data: dict, offset_h: int) -> dict[int, float]:
+def _rows_to_hourly_wh(data: dict) -> dict[int, float]:
     """Parse InfluxDB series into {warsaw_hour: Wh} dict."""
     by_hour: dict[int, list] = {}
     for series in data.get("series", []):
@@ -681,8 +675,10 @@ def _rows_to_hourly_wh(data: dict, offset_h: int) -> dict[int, float]:
             if val is None:
                 continue
             try:
-                dt = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
-                h = (dt.hour + offset_h) % 24
+                dt_w = _influx_ts_warsaw(ts)
+                if dt_w is None:
+                    continue
+                h = dt_w.hour
                 by_hour.setdefault(h, []).append(float(val))
             except Exception:
                 pass
@@ -690,7 +686,6 @@ def _rows_to_hourly_wh(data: dict, offset_h: int) -> dict[int, float]:
 
 
 def _query_load_profile() -> dict[str, Any]:
-    offset_h = _warsaw_offset_hours()
     midnight_utc = _warsaw_midnight_utc()
     since_today = midnight_utc.strftime("'%Y-%m-%dT%H:%M:%SZ'")
     since_7d = (midnight_utc - timedelta(days=7)).strftime("'%Y-%m-%dT%H:%M:%SZ'")
@@ -699,7 +694,7 @@ def _query_load_profile() -> dict[str, Any]:
     data_today = _influx_query(
         f'SELECT * FROM "Load power hourly" WHERE time >= {since_today} ORDER BY time ASC'
     )
-    today_wh = _rows_to_hourly_wh(data_today, offset_h)
+    today_wh = _rows_to_hourly_wh(data_today)
     today_actual: list[float | None] = [
         round(today_wh[h] / 1000.0, 3) if h in today_wh else None
         for h in range(24)
@@ -708,7 +703,7 @@ def _query_load_profile() -> dict[str, Any]:
     data_pv_today = _influx_query(
         f'SELECT * FROM "PV power hourly" WHERE time >= {since_today} ORDER BY time ASC'
     )
-    today_pv_wh = _rows_to_hourly_wh(data_pv_today, offset_h)
+    today_pv_wh = _rows_to_hourly_wh(data_pv_today)
     today_pv_actual: list[float | None] = [
         round(today_pv_wh[h] / 1000.0, 3) if h in today_pv_wh else None
         for h in range(24)
@@ -718,7 +713,7 @@ def _query_load_profile() -> dict[str, Any]:
     data_7d = _influx_query(
         f'SELECT * FROM "Load power hourly" WHERE time >= {since_7d} AND time < {since_today} ORDER BY time ASC'
     )
-    avg_wh = _rows_to_hourly_wh(data_7d, offset_h)
+    avg_wh = _rows_to_hourly_wh(data_7d)
     # Group by hour across multiple days then average.
     raw: dict[int, list] = {}
     for series in data_7d.get("series", []):
@@ -732,8 +727,10 @@ def _query_load_profile() -> dict[str, Any]:
             if val is None:
                 continue
             try:
-                dt = datetime.strptime(ts[:16], "%Y-%m-%dT%H:%M")
-                h = (dt.hour + offset_h) % 24
+                dt_w = _influx_ts_warsaw(ts)
+                if dt_w is None:
+                    continue
+                h = dt_w.hour
                 raw.setdefault(h, []).append(float(val))
             except Exception:
                 pass

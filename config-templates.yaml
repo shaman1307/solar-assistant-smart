@@ -56,9 +56,6 @@ templates:
         offpeak_price_pln_kwh: 0.6229
         peak_energy_only_pln_kwh: 0.7182
         offpeak_energy_only_pln_kwh: 0.4678
-        peak_hours_weekday:
-          - [6, 13]
-          - [15, 22]
       distribution:
         subscription_pln_month: 0.9102
         fixed_network_pln_month: 24.8091

@@ -7,8 +7,10 @@ from datetime import datetime
 
 import pytest
 
+from src.g12_pricing import get_g12_zone
 from src.grid_config import merge_grid_defaults
 from src.plan_cost import hour_grid_cash_pln
+from src.plan_dp import dp_step_clock
 from src.plan_optimizer import (
     DP_COST_INF,
     HourControl,
@@ -112,12 +114,13 @@ def _path_cost_and_socs(
     tariff = g12_tariff_from_cfg(cfg)
     offpeak = tariff.offpeak_full
     steps = len(controls)
+    slots = max(1, int(round(1.0 / step_scale)))
 
     reserves = [
         reserve_soc_kwh_from_step(
             s, pv_series, load_series, reserve_floor, eta_out, eta_pv_load, eps_step,
             buy_series=buy_prices, offpeak_buy=offpeak,
-            slots_per_hour=max(1, int(round(1.0 / step_scale))),
+            slots_per_hour=slots,
             global_step_offset=rce_step_offset,
         )
         for s in range(steps)
@@ -146,7 +149,13 @@ def _path_cost_and_socs(
         buy_p = buy_prices[step]
         rce_idx = rce_step_offset + step
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
-        g12_zone = "peak" if buy_p > offpeak + eps_step else "offpeak"
+        g12_zone = get_g12_zone(
+            dp_step_clock(
+                today_date, step,
+                rce_step_offset=rce_step_offset, slots_per_hour=slots,
+            ),
+            cfg,
+        )
         phys = simulate_hour(
             soc, pv, load, ctrl,
             battery_cap=battery_cap, min_kwh=min_kwh, ac_cap_kw=inverter_ac,
@@ -265,7 +274,13 @@ def _brute_best_cost(
         rce_idx = rce_step_offset + step
         rce = rce_series[rce_idx] if rce_idx < len(rce_series) else None
         allow = False  # Match optimize_horizon: export is ranked post-pass, not in DP.
-        g12_zone = "peak" if buy_p > offpeak + eps_step else "offpeak"
+        g12_zone = get_g12_zone(
+            dp_step_clock(
+                today_date, step,
+                rce_step_offset=rce_step_offset, slots_per_hour=slots,
+            ),
+            cfg,
+        )
         for ctrl in control_options(
             soc, pv, load,
             battery_cap=battery_cap, min_kwh=min_kwh,

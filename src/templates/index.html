@@ -2772,7 +2772,7 @@
           <div>
             <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (PLN/kWh brutto)</label>
             <input name="grid.g12.peak_price_pln_kwh" id="inp-peak-price" type="number" step="0.0001" required
-              title="Peak hours from config: 06–13 and 15–22 every day (G12); weekdays only (G12w)"
+              title="Peak hours: 06–13 and 15–22 every day (G12); weekdays only (G12w)"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-red-500" />
           </div>
           <div>
@@ -3545,20 +3545,6 @@ function g12TariffZoneLabel(tariffName, zone) {
   return tariffName ? `${tariffName} ${z}` : z;
 }
 
-/** Short tariff code for chart title (G12, G12w, G11) from config preset or tariff_name. */
-function g12TariffChartPrefix(tariffName) {
-  const preset = configData?.grid?.g12?.tariff_preset;
-  if (preset) return preset;
-  const name = tariffName || configData?.grid?.g12?.tariff_name || '';
-  const m = String(name).match(/\b(G11|G12w|G12)\b/i);
-  if (m) return m[1];
-  return name || 'G12';
-}
-
-function buyTariffChartTitle(tariffName) {
-  return `${g12TariffChartPrefix(tariffName)} Buy Tariff`;
-}
-
 /** Tariff / RCE line chart palette (light UI). */
 const CHART_COLORS = {
   peak: '#D9485F',
@@ -3566,6 +3552,23 @@ const CHART_COLORS = {
   rceLine: '#166534',
   empty: '#E5E9EF',
 };
+
+/** Peak clock windows from src/g12_pricing.py TARIFF_PRESETS. */
+const TARIFF_PRESETS = {{ tariff_presets | tojson }};
+
+function activeTariffPresetKey() {
+  const preset = String(configData?.grid?.g12?.tariff_preset || '').trim();
+  if (TARIFF_PRESETS[preset]) return preset;
+  return 'G12';
+}
+
+function g12TariffChartPrefix(_tariffName) {
+  return activeTariffPresetKey();
+}
+
+function buyTariffChartTitle(tariffName) {
+  return `${g12TariffChartPrefix(tariffName)} Buy Tariff`;
+}
 
 const TARIFF_RCE_SLOTS_PER_HOUR = 4;
 /** Full price axis (100%): 2× G12 peak so peak bars hit mid height (50%). */
@@ -3575,16 +3578,12 @@ function acrPriceYMaxPln() {
 const CHART_G12_BG_OPACITY = 0.32;
 
 function g12PeakPricePln() {
-  const v = configData?.grid?.g12?.peak_price_pln_kwh
-    ?? buyTariffData?.peak_price_pln_kwh;
-  const n = Number(v);
+  const n = Number(configData?.grid?.g12?.peak_price_pln_kwh);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function g12OffpeakPricePln() {
-  const v = configData?.grid?.g12?.offpeak_price_pln_kwh
-    ?? buyTariffData?.offpeak_price_pln_kwh;
-  const n = Number(v);
+  const n = Number(configData?.grid?.g12?.offpeak_price_pln_kwh);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
@@ -6054,27 +6053,6 @@ async function saveConfig(event) {
   if (currentTab === 'simulation') void refreshQuarterCycle({ syncSliders: false });
 }
 
-// ---------------------------------------------------------------------------
-// Tariff presets
-// ---------------------------------------------------------------------------
-const TARIFF_PRESETS = {
-  'G12': {
-    name: 'Energa G12',
-    peak: 1.2444, offpeak: 0.6229,
-    peakHoursLabel: 'every day 06-13, 15-22',
-  },
-  'G12w': {
-    name: 'Energa G12w',
-    peak: 1.3100, offpeak: 0.6109,
-    peakHoursLabel: 'weekdays 06-13, 15-22; Saturday and Sunday offpeak',
-  },
-  'G11': {
-    name: 'Energa G11',
-    peak: 1.1006, offpeak: 1.1006,  // single zone — same price all day
-    peakHoursLabel: 'no zones (flat rate)',
-  },
-};
-
 function applyTariffPreset(key) {
   const p = TARIFF_PRESETS[key];
   if (!p) return;
@@ -6125,8 +6103,7 @@ function buildYAxisRange(yAxisEl, chartAreaEl, minP, maxP, gridCount = 4) {
 
 function collectTariffRcePrices() {
   const prices = [];
-  const buyRows = simData?.rows?.length ? simData.rows : buyTariffData?.rows;
-  const timeline = getTariffRceDisplayTimeline(buyRows || [], rceData);
+  const timeline = getTariffRceDisplayTimeline(rceData);
   timeline.forEach((s) => {
     if (s.buyPrice != null && s.buyPrice > 0) prices.push(s.buyPrice);
     if (s.rcePrice != null && s.rcePrice > 0) prices.push(s.rcePrice);
@@ -6186,14 +6163,16 @@ function simIntervalRangeLabel(start) {
   return `${pad(startH)}:00–${pad(endH)}:00`;
 }
 
+function simHourRangeLabel(hour) {
+  const h = Number(hour);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(h)}:00–${pad((h + 1) % 24)}:00`;
+}
+
 function simRowTimeRange(r) {
   if (r.start && String(r.start).includes('TOTAL')) return r.start;
+  if (r.hour != null) return simHourRangeLabel(r.hour);
   if (r.start) return simIntervalRangeLabel(r.start);
-  if (r.hour != null) {
-    const h = Number(r.hour);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${pad(h)}:00–${pad((h + 1) % 24)}:00`;
-  }
   return '';
 }
 
@@ -6239,139 +6218,23 @@ function tariffRceSlotTs(slot) {
   return new Date(`${slot.date}T${slot.time}:00`).getTime();
 }
 
-function g12PeakHoursFromConfig() {
-  const raw = configData?.grid?.g12?.peak_hours_weekday;
-  return Array.isArray(raw) ? raw : [];
-}
-
-/** Chart fallback: same rule as get_g12_zone — windows from config; G12 every day. */
-function getG12ZoneForSlot(dateStr, timeStr) {
-  const hour = parseInt(timeStr.slice(0, 2), 10);
-  const inPeak = g12PeakHoursFromConfig().some(
-    ([start, end]) => hour >= start && hour < end,
-  );
-  if (!inPeak) return 'offpeak';
-  if (g12TariffChartPrefix() === 'G12w') {
-    const dt = new Date(`${dateStr}T${timeStr}:00`);
-    const jsDay = dt.getDay();
-    const weekday = jsDay === 0 ? 6 : jsDay - 1;
-    if (weekday >= 5) return 'offpeak';
-  }
-  return 'peak';
-}
-
-function buildBuyHourMap(buyRows) {
+function g12HoursByKey(rceData) {
   const map = new Map();
-  (buyRows || []).forEach((row) => {
-    const parsed = parseBuyRowStart(row.start);
-    if (!parsed) return;
-    const hourKey = `${parsed.date}|${String(parsed.hour).padStart(2, '0')}`;
-    map.set(hourKey, {
-      buyPrice: row.buy_price,
-      g12_zone: row.g12_zone,
-      start: row.start,
-    });
-  });
+  for (const row of rceData?.g12_hours || []) {
+    map.set(`${row.date}|${String(row.hour).padStart(2, '0')}`, row);
+  }
   return map;
 }
 
-function resolveG12ForSlot(dateStr, timeStr, buyHourMap) {
-  const hourKey = `${dateStr}|${timeStr.slice(0, 2)}`;
-  const fromRow = buyHourMap.get(hourKey);
-  if (fromRow) return fromRow;
-
-  const zone = getG12ZoneForSlot(dateStr, timeStr);
-  const buyPrice = zone === 'peak' ? g12PeakPricePln() : g12OffpeakPricePln();
-  const [y, m, d] = dateStr.split('-');
-  return {
-    buyPrice,
-    g12_zone: zone,
-    start: `${d}-${m}-${y} ${timeStr.slice(0, 2)}:00`,
-  };
-}
-
-/** Timeline length follows RCE availability; G12 fills every 15-min slot in that window. */
-function buildTariffRceTimeline(buyRows, rceData) {
-  const rceSeries = rceData ? buildRceChartSeries(rceData) : [];
-  const buyHourMap = buildBuyHourMap(buyRows);
-
-  if (rceSeries.length) {
-    return rceSeries.map((s) => {
-      const g12 = resolveG12ForSlot(s.date, s.time, buyHourMap);
-      return {
-        date: s.date,
-        time: s.time,
-        key: tariffRceSlotKey(s.date, s.time),
-        buyPrice: g12.buyPrice,
-        g12_zone: g12.g12_zone,
-        rcePrice: s.price,
-        start: g12.start,
-      };
-    });
+function g12SlotFromHours(map, dateStr, hour) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const time = `${pad(hour)}:00`;
+  const row = map.get(`${dateStr}|${pad(hour)}`);
+  const start = simHourRangeLabel(hour);
+  if (!row) {
+    return { buyPrice: null, g12_zone: 'offpeak', start, time };
   }
-
-  const slots = [];
-  (buyRows || []).forEach((row) => {
-    const parsed = parseBuyRowStart(row.start);
-    if (!parsed) return;
-    for (let q = 0; q < TARIFF_RCE_SLOTS_PER_HOUR; q += 1) {
-      const minute = q * 15;
-      const time = `${String(parsed.hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-      slots.push({
-        date: parsed.date,
-        time,
-        key: tariffRceSlotKey(parsed.date, time),
-        buyPrice: row.buy_price,
-        g12_zone: row.g12_zone,
-        rcePrice: null,
-        start: row.start,
-      });
-    }
-  });
-
-  slots.sort((a, b) => tariffRceSlotTs(a) - tariffRceSlotTs(b));
-  return slots;
-}
-
-/** Hourly buckets for readable bar width (mean RCE per hour). */
-function aggregateTariffRceTimelineHourly(slots) {
-  if (!slots.length) return [];
-  const buckets = new Map();
-  const order = [];
-  for (const s of slots) {
-    const hour = s.time.slice(0, 2);
-    const key = `${s.date}|${hour}`;
-    if (!buckets.has(key)) {
-      buckets.set(key, {
-        date: s.date,
-        time: `${hour}:00`,
-        key,
-        buyPrice: s.buyPrice,
-        g12_zone: s.g12_zone,
-        start: s.start,
-        rceSum: 0,
-        rceCount: 0,
-      });
-      order.push(key);
-    }
-    const b = buckets.get(key);
-    if (s.rcePrice != null) {
-      b.rceSum += s.rcePrice;
-      b.rceCount += 1;
-    }
-  }
-  return order.map((key) => {
-    const b = buckets.get(key);
-    return {
-      date: b.date,
-      time: b.time,
-      key: b.key,
-      buyPrice: b.buyPrice,
-      g12_zone: b.g12_zone,
-      rcePrice: b.rceCount ? Math.round((b.rceSum / b.rceCount) * 10000) / 10000 : null,
-      start: b.start,
-    };
-  });
+  return { buyPrice: row.buy_price, g12_zone: row.zone, start, time };
 }
 
 function nextCalendarDate(dateStr) {
@@ -6426,67 +6289,67 @@ function getRceSeriesForTimeline(d) {
     : today.concat(all.filter((s) => s.day === 'tomorrow'));
 }
 
-/** Full calendar days (24 hourly slots each): G12 every hour, RCE where available. */
-function getTariffRceDisplayTimeline(buyRows, rceData) {
+/** Full calendar days (24 hourly slots each): G12 from payload, RCE where available. */
+function getTariffRceDisplayTimeline(rceData) {
+  const g12Map = g12HoursByKey(rceData);
   const rceSeries = getRceSeriesForTimeline(rceData);
-  const buyHourMap = buildBuyHourMap(buyRows || []);
+  const rceByHour = new Map();
+  for (const s of rceSeries) {
+    if (s.price == null) continue;
+    const start = rcePeriodStart(s.date, s.time);
+    const key = start.hourKey;
+    if (!rceByHour.has(key)) rceByHour.set(key, []);
+    rceByHour.get(key).push(s.price);
+  }
 
-  if (rceSeries.length) {
-    const rceByHour = new Map();
-    for (const s of rceSeries) {
-      if (s.price == null) continue;
-      const start = rcePeriodStart(s.date, s.time);
-      const key = start.hourKey;
-      if (!rceByHour.has(key)) rceByHour.set(key, []);
-      rceByHour.get(key).push(s.price);
+  const hourCoverage = (date) => {
+    let n = 0;
+    for (let h = 0; h < 24; h++) {
+      if ((rceByHour.get(`${date}|${String(h).padStart(2, '0')}`) || []).length > 0) n++;
     }
+    return n;
+  };
 
-    // Count how many hours have prices for a given date
-    const hourCoverage = (date) => {
-      let n = 0;
-      for (let h = 0; h < 24; h++) {
-        if ((rceByHour.get(`${date}|${String(h).padStart(2, '0')}`) || []).length > 0) n++;
-      }
-      return n;
-    };
-
-    const dates = [];
+  const dates = [];
+  if (rceSeries.length) {
     let d = rceSeries[0].date;
     const endD = rceSeries[rceSeries.length - 1].date;
     while (d <= endD) {
       if (dates.length === 0) {
-        dates.push(d); // always include today (first date)
-      } else {
-        // Only include future dates when PSE published the full day (≥20 hours with prices)
-        if (hourCoverage(d) >= 20) dates.push(d);
+        dates.push(d);
+      } else if (hourCoverage(d) >= 20) {
+        dates.push(d);
       }
       d = nextCalendarDate(d);
     }
-
-    const slots = [];
-    for (const date of dates) {
-      for (let h = 0; h < 24; h += 1) {
-        const time = `${String(h).padStart(2, '0')}:00`;
-        const hourKey = `${date}|${String(h).padStart(2, '0')}`;
-        const prices = rceByHour.get(hourKey) || [];
-        if (!prices.length) continue;   // skip hours with no RCE data
-        const g12 = resolveG12ForSlot(date, time, buyHourMap);
-        const rcePrice = Math.round((prices.reduce((a, v) => a + v, 0) / prices.length) * 10000) / 10000;
-        slots.push({
-          date,
-          time,
-          key: tariffRceSlotKey(date, time),
-          buyPrice: g12.buyPrice,
-          g12_zone: g12.g12_zone,
-          rcePrice,
-          start: g12.start,
-        });
-      }
+  } else {
+    for (const row of rceData?.g12_hours || []) {
+      if (row.date && !dates.includes(row.date)) dates.push(row.date);
     }
-    return slots;
   }
 
-  return aggregateTariffRceTimelineHourly(buildTariffRceTimeline(buyRows || [], rceData));
+  const slots = [];
+  for (const date of dates) {
+    for (let h = 0; h < 24; h += 1) {
+      const time = `${String(h).padStart(2, '0')}:00`;
+      const hourKey = `${date}|${String(h).padStart(2, '0')}`;
+      const prices = rceByHour.get(hourKey) || [];
+      const g12 = g12SlotFromHours(g12Map, date, h);
+      const rcePrice = prices.length
+        ? Math.round((prices.reduce((a, v) => a + v, 0) / prices.length) * 10000) / 10000
+        : null;
+      slots.push({
+        date,
+        time,
+        key: tariffRceSlotKey(date, time),
+        buyPrice: g12.buyPrice,
+        g12_zone: g12.g12_zone,
+        rcePrice,
+        start: g12.start,
+      });
+    }
+  }
+  return slots;
 }
 
 function tariffBarHeight(price, minP, maxP) {
@@ -6917,10 +6780,9 @@ function renderTariffRceCombinedChart() {
   const splineEl = document.getElementById('tariff-rce-spline');
   if (!columnsEl) return;
 
-  updateBuyTariffLabels(buyTariffData?.tariff_name);
+  updateBuyTariffLabels(configData?.grid?.g12?.tariff_name);
 
-  const buyRows = simData?.rows?.length ? simData.rows : buyTariffData?.rows;
-  const timeline = getTariffRceDisplayTimeline(buyRows || [], rceData);
+  const timeline = getTariffRceDisplayTimeline(rceData);
   window._tariffRceLastTimeline = timeline;
 
   columnsEl.innerHTML = '';
@@ -6968,24 +6830,21 @@ function renderTariffRceCombinedChart() {
 /** Hourly G12 + RCE slots for one accruals chart day (24h, matches X-axis). */
 function buildAcrPriceTimeline(dateStr) {
   if (!dateStr) return [];
-  const buyRows = simData?.rows?.length ? simData.rows : buyTariffData?.rows;
-  const buyHourMap = buildBuyHourMap(buyRows || []);
+  const g12Map = g12HoursByKey(rceData);
   const rceByHour = new Map();
-  if (rceData?.series_15min?.length) {
-    for (const s of rceData.series_15min) {
-      if (s.price == null) continue;
-      const start = rcePeriodStart(s.date, s.time);
-      if (start.date !== dateStr) continue;
-      const key = start.hourKey;
-      if (!rceByHour.has(key)) rceByHour.set(key, []);
-      rceByHour.get(key).push(s.price);
-    }
+  for (const s of getRceSeriesForTimeline(rceData)) {
+    if (s.price == null) continue;
+    const start = rcePeriodStart(s.date, s.time);
+    if (start.date !== dateStr) continue;
+    const key = start.hourKey;
+    if (!rceByHour.has(key)) rceByHour.set(key, []);
+    rceByHour.get(key).push(s.price);
   }
 
   const slots = [];
   for (let h = 0; h < 24; h += 1) {
     const time = `${String(h).padStart(2, '0')}:00`;
-    const g12 = resolveG12ForSlot(dateStr, time, buyHourMap);
+    const g12 = g12SlotFromHours(g12Map, dateStr, h);
     const prices = rceByHour.get(`${dateStr}|${String(h).padStart(2, '0')}`) || [];
     const rcePrice = prices.length
       ? Math.round((prices.reduce((a, v) => a + v, 0) / prices.length) * 10000) / 10000
@@ -7823,27 +7682,6 @@ function renderRCEHeader(d) {
   const p = d.current_price_pln_kwh;
   const el = document.getElementById('rce-price');
   if (el) el.textContent = p != null ? p.toFixed(3) : '—';
-}
-
-function buildRceChartSeries(d) {
-  let series;
-  if (d.series_15min?.length) {
-    const today = d.series_15min.filter(s => s.day === 'today');
-    series = !d.tomorrow_has_prices
-      ? today
-      : today.concat(d.series_15min.filter(s => s.day === 'tomorrow'));
-  } else {
-    const all = d.series_30min || [];
-    const today = all.filter(s => s.day === 'today' || s.day == null);
-    series = !d.tomorrow_has_prices
-      ? today
-      : today.concat(all.filter(s => s.day === 'tomorrow'));
-  }
-  let start = 0;
-  while (start < series.length && series[start].price == null) start += 1;
-  let end = series.length;
-  while (end > start && series[end - 1].price == null) end -= 1;
-  return series.slice(start, end);
 }
 
 function renderRCEChart(d) {

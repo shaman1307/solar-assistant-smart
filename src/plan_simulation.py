@@ -18,6 +18,7 @@ from . import influxdb as influxdb_mod
 from . import rce as rce_mod
 from . import sa_client
 from .influxdb import now_warsaw
+from .plan_hourly_actuals import interval_end_label
 from .plan_cache_merge import (
     attach_immutable_history,
     merge_incremental_plan,
@@ -302,7 +303,8 @@ def _compute_buy_tariff_rows(cfg: dict) -> list[dict[str, Any]]:
         buy_price, g12_zone = get_buy_price(dt, cfg)
         rows.append({
             "hour": dt.hour,
-            "start": dt.strftime("%d-%m-%Y %H:00"),
+            "plan_date": dt.strftime("%Y-%m-%d"),
+            "start": interval_end_label(dt),
             "buy_price": round(buy_price, 4),
             "g12_zone": g12_zone,
         })
@@ -320,6 +322,7 @@ def build_buy_tariff_payload(
         rows = [
             {
                 "hour": r["hour"],
+                "plan_date": r.get("plan_date"),
                 "start": r["start"],
                 "buy_price": r["buy_price"],
                 "g12_zone": r["g12_zone"],
@@ -412,7 +415,7 @@ def _wrap_sim_result(
         "actual_soc_q15": extract_actual_soc_q15(sim),
     }
     if result.get("rce"):
-        rce_mod._refresh_current_price(result["rce"])
+        rce_mod.prepare_rce_payload(result["rce"])
         result["rce_current"] = result["rce"].get("current_price_pln_kwh")
     return result
 
@@ -454,7 +457,7 @@ async def build_plan_simulation(
     if cached is not None and _plan_window_matches(cached, now):
         result = dict(cached)
         if result.get("rce"):
-            rce_mod._refresh_current_price(result["rce"])
+            rce_mod.prepare_rce_payload(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
         _overlay_meter_soc_on_plan(result, await _metrics_for_soc_overlay(), now)
         result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
@@ -465,7 +468,7 @@ async def build_plan_simulation(
         if cached is not None and _plan_window_matches(cached, now):
             result = dict(cached)
             if result.get("rce"):
-                rce_mod._refresh_current_price(result["rce"])
+                rce_mod.prepare_rce_payload(result["rce"])
                 result["rce_current"] = result["rce"].get("current_price_pln_kwh")
             _overlay_meter_soc_on_plan(result, await _metrics_for_soc_overlay(), now)
             result["actual_soc_q15"] = extract_actual_soc_q15(result, now=now)
@@ -595,7 +598,7 @@ async def hourly_plan_refresh(
             result["rows"], result["next_hour"], cfg, rules,
         )
         if result.get("rce"):
-            rce_mod._refresh_current_price(result["rce"])
+            rce_mod.prepare_rce_payload(result["rce"])
             result["rce_current"] = result["rce"].get("current_price_pln_kwh")
 
         write_plan(result, now=now)
