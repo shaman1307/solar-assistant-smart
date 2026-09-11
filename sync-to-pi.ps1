@@ -37,6 +37,8 @@ $files = @(
     "src\app_logging.py",
     "src\inverter_sim.py",
     "src\influxdb.py",
+    "src\influx_datapatch.py",
+    "scripts\influx_datapatch.py",
     "src\forecast.py",
     "src\forecast_cache.py",
     "src\ev_charging.py",
