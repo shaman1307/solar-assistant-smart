@@ -6,10 +6,25 @@ import json
 import logging
 import os
 import shutil
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+_save_locks: dict[str, threading.Lock] = {}
+_save_locks_guard = threading.Lock()
+
+
+def _save_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _save_locks_guard:
+        lock = _save_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _save_locks[key] = lock
+        return lock
 
 
 def load_json(path: Path, *, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -36,13 +51,29 @@ def load_json(path: Path, *, default: dict[str, Any] | None = None) -> dict[str,
 
 
 def atomic_json_save(path: Path, data: dict[str, Any]) -> None:
-    """Write JSON atomically (tmp + replace) and keep a ``.bak`` copy."""
+    """Write JSON atomically (unique tmp + replace) and keep a ``.bak`` copy."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = Path(str(path) + ".tmp")
     payload = json.dumps(data, indent=2)
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, path)
-    try:
-        shutil.copy2(path, Path(str(path) + ".bak"))
-    except OSError as exc:
-        log.warning("JSON backup failed for %s: %s", path.name, exc)
+    with _save_lock(path):
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        try:
+            shutil.copy2(path, Path(str(path) + ".bak"))
+        except OSError as exc:
+            log.warning("JSON backup failed for %s: %s", path.name, exc)

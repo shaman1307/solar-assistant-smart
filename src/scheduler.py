@@ -198,6 +198,8 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         id="daily_month_history",
         replace_existing=True,
         misfire_grace_time=300,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         run_nightly_forecast_cache,
@@ -205,6 +207,8 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         id="nightly_forecast_cache",
         replace_existing=True,
         misfire_grace_time=300,
+        max_instances=1,
+        coalesce=True,
     )
     register_hour_boundary_jobs(scheduler)
     scheduler.add_job(
@@ -213,6 +217,8 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
         id="quarter_plan_refresh",
         replace_existing=True,
         misfire_grace_time=120,
+        max_instances=1,
+        coalesce=True,
     )
     log.info(
         "Scheduler: month_history at 00:05; forecast cache + balance Δ at 23:59; plan refresh + SA sync at "

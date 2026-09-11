@@ -49,7 +49,10 @@ def load_day_cache() -> dict[str, Any]:
 
 
 def save_day_cache(data: dict[str, Any]) -> None:
-    atomic_json_save(_CACHE_PATH, data)
+    try:
+        atomic_json_save(_CACHE_PATH, data)
+    except OSError as exc:
+        log.warning("Forecast day cache save failed: %s", exc)
 
 
 def invalidate_day_cache_file() -> None:
