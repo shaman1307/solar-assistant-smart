@@ -14,7 +14,7 @@ from .plan_physics import (
 )
 
 HOURS_PER_DAY = 24
-# Calendar AM bound only when that day has no peak hours at all (e.g. G12w weekend).
+# Calendar noon bound when that day has no peak hours on the selected tariff.
 _ALL_OFFPEAK_COVER_HOUR_END = 12
 
 def morning_cover_bound_from_hour_buys(
@@ -30,7 +30,7 @@ def morning_cover_bound_from_hour_buys(
     - one block starting before noon → its end;
     - one block starting late (evening only, e.g. truncated series) → its start
       so evening PV does not look like morning cover;
-    - all offpeak (G12w weekend) → None.
+    - all offpeak → None.
     """
     n = min(HOURS_PER_DAY, len(hour_buys))
     if n <= 0:
@@ -294,13 +294,10 @@ def grid_charge_target_soc_kwh_from_step(
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
 ) -> float:
-    """SOC worth buying from the grid: floor + future *peak* house deficits only.
+    """SOC worth buying from the grid: floor + peak house deficits until PV covers.
 
-    Offpeak deficits are not part of the *purchase* budget — reserve/discharge
-    already plans to avoid offpeak import (including midnight→morning peak
-    selection). Grid→battery covers only missing kWh for the nearest peak hours
-    until PV covers within the morning tariff horizon.
-    Weekend / all-offpeak: floor only.
+    Overnight offpeak load is not bought — the house may sit on the grid at night.
+    A day with no peak hours on the selected tariff: floor only.
     """
     hour_buys = _day_hour_buys_from_series(
         buy_series,
@@ -339,8 +336,8 @@ def _forward_soc_need_from_step(
     """Walk forward until PV covers load in that day's tariff morning horizon.
 
     Cover bound comes from each calendar day's buy prices (morning peak end,
-    or evening-peak start, or all-offpeak weekend). Afternoon PV cover must
-    not end the walk before tonight's deficits. With peak_deficits_only, only
+    or evening-peak start, or all-offpeak). Afternoon PV cover must not end
+    the walk before tonight's deficits. With peak_deficits_only, only
     peak-priced deficits are summed.
     """
     need = 0.0

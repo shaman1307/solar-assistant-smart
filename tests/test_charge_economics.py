@@ -162,7 +162,7 @@ def test_front_load_drops_uneconomic_thin_budget():
 
 def test_front_load_keeps_economic_budget_dense_in_one_hour():
     """4 kWh packs into one clock hour (H01 = steps 4..7), not split 30+30 across hours."""
-    # Seed DP budget in late offpeak slots; front-load relocates early and dense.
+    # Seed DP budget in late offpeak slots; pack dense in the last hour before peak.
     out = _front_load([(6, 2.0), (7, 2.0)])
     hour1 = [out[i].grid_charge_kw for i in range(4, 8)]
     hour2 = [out[i].grid_charge_kw for i in range(8, 12)]

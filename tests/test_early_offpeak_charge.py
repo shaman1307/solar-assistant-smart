@@ -1,4 +1,4 @@
-"""Grid charge must start in the earliest available offpeak hours."""
+"""Grid charge sits in the last offpeak hours before the morning peak."""
 
 from __future__ import annotations
 
@@ -59,8 +59,8 @@ def _cfg() -> dict:
     return cfg
 
 
-def test_grid_charge_starts_at_next_hour_not_current():
-    """Charge starts at the next horizon hour (skip current), not deferred to 03–05."""
+def test_grid_charge_sits_in_last_offpeak_hour_before_peak():
+    """Charge the last offpeak hour before 06:00; skip the current hour."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
     # 00-05 offpeak load, 06-08 peak load needing battery cover; PV covers from 09.
@@ -100,10 +100,11 @@ def test_grid_charge_starts_at_next_hour_not_current():
     charged_hours = [h for h, c in enumerate(controls) if c.grid_charge_kw > 0.05]
     assert charged_hours, "expected some offpeak grid charge"
     assert controls[0].grid_charge_kw < 0.05, "current hour must not start Chg"
-    assert charged_hours[0] == 1, f"charge should start at next hour (1), got {charged_hours}"
     early = [h for h in charged_hours if h < 6]
+    assert early, f"expected pre-peak charge, got {charged_hours}"
     assert early == list(range(early[0], early[-1] + 1)), early
-    assert max(early) < 6, f"late night top-up not allowed: {charged_hours}"
+    assert early[-1] == 5, f"charge should end in the last offpeak hour (5), got {early}"
+    assert early[0] >= 4, f"charge should sit close to peak, got {early}"
 
 
 def test_no_overnight_charge_when_already_above_cover_target():
@@ -147,7 +148,7 @@ def test_no_overnight_charge_when_already_above_cover_target():
 
 
 def test_peak_hours_not_fed_from_grid_when_peak_cover_held():
-    """Below peak-cover target: charge in earliest contiguous offpeak hours."""
+    """Below peak-cover target: charge in the last offpeak hours before peak."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
     # Small peak deficit, large overnight offpeak load.
@@ -183,21 +184,19 @@ def test_peak_hours_not_fed_from_grid_when_peak_cover_held():
         rce_step_offset=0,
     )
 
-    # Next hour (not current) takes the peak-cover charge.
     assert controls[0].grid_charge_kw < 0.05
-    assert controls[1].grid_charge_kw > 0.05
-    # Contiguous early charge block among first offpeak hours.
     charged = [h for h in range(6) if controls[h].grid_charge_kw > 0.05]
     if charged:
         assert charged == list(range(charged[0], charged[-1] + 1)), charged
-        assert charged[0] == 1
+        assert charged[-1] == 5
+        assert charged[0] >= 4
 
 
-def test_above_peak_target_moves_dp_charge_to_next_hour():
-    """Relocate DP pre-peak Chg to start at next hour; keep optimizer kWh budget."""
+def test_above_peak_target_moves_dp_charge_before_peak():
+    """Relocate DP pre-peak Chg into the last offpeak hour before peak."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
-    # Heavy overnight load drains hard; DP typically tops up late before peak.
+    # Heavy overnight load drains hard; top-up must land just before 06:00.
     pv = [0.0] * 9 + [2.0] * 6 + [0.0] * 9
     load = [0.9] * 6 + [0.5] * 3 + [0.3] * 15
     buy = [OFF] * 6 + [PEAK] * 7 + [OFF] * 11
@@ -234,7 +233,7 @@ def test_above_peak_target_moves_dp_charge_to_next_hour():
     charged = [h for h in range(6) if controls[h].grid_charge_kw > 0.05]
     assert controls[0].grid_charge_kw < 0.05
     if charged:
-        # One contiguous block starting at next hour — not scattered late slices.
         assert charged == list(range(charged[0], charged[-1] + 1)), charged
-        assert charged[0] == 1, f"charge should start at next hour, got {charged}"
+        assert charged[-1] == 5, f"charge should end before peak in hour 5, got {charged}"
+        assert charged[0] >= 4, f"charge should sit close to peak, got {charged}"
         assert all(not controls[h].load_from_grid for h in charged)

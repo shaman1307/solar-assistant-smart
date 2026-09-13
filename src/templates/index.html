@@ -2770,13 +2770,13 @@
         </select>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (PLN/kWh brutto)</label>
+            <label class="text-xs text-gray-500 block mb-1 text-red-400">Peak (energy + service, PLN/kWh brutto)</label>
             <input name="grid.g12.peak_price_pln_kwh" id="inp-peak-price" type="number" step="0.0001" required
               title="Peak hours: 06–13 and 15–22 every day (G12); weekdays only (G12w)"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-red-500" />
           </div>
           <div>
-            <label class="text-xs text-gray-500 block mb-1 text-green-400">Off-peak (PLN/kWh brutto)</label>
+            <label class="text-xs text-gray-500 block mb-1 text-green-400">Off-peak (energy + service, PLN/kWh brutto)</label>
             <input name="grid.g12.offpeak_price_pln_kwh" id="inp-offpeak-price" type="number" step="0.0001" required
               title="Off-peak: 22–06 and 13–15 every day; G12w also Saturday and Sunday"
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-green-500" />
@@ -3251,7 +3251,7 @@
             <th class="font-medium text-right" title="(kWh)">Grid import</th>
             <th class="font-medium text-right" title="(kWh)">Grid export</th>
             <th class="font-medium text-right" title="(%)">SOC</th>
-            <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy" title="(PLN/kWh)">Buy Price</th>
+            <th class="font-medium text-right sim-col-buy" id="sim-hdr-buy" title="G12 energy without distribution (PLN/kWh)">Buy Price</th>
             <th class="font-medium text-right sim-col-sell" id="sim-hdr-sell" title="(PLN/kWh)">Sell Price</th>
             <th class="font-medium text-right" id="sim-hdr-energy" title="(PLN)">Energy Cost</th>
             <th class="font-medium">Timer <br class="sim-th-br-mobile">Schedule</th>
@@ -3585,6 +3585,20 @@ function g12PeakPricePln() {
 function g12OffpeakPricePln() {
   const n = Number(configData?.grid?.g12?.offpeak_price_pln_kwh);
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function g12EnergyBuyPricePln(zone) {
+  const simKey = zone === 'peak' ? 'g12_peak_energy_only_pln_kwh' : 'g12_offpeak_energy_only_pln_kwh';
+  const cfgKey = zone === 'peak' ? 'peak_energy_only_pln_kwh' : 'offpeak_energy_only_pln_kwh';
+  const n = Number(simData?.[simKey] ?? configData?.grid?.g12?.[cfgKey]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function simEnergyBuyPriceFmt(r) {
+  if (r.buy_price == null) return '—';
+  const energy = g12EnergyBuyPricePln(r.g12_zone);
+  const n = energy != null ? energy : Number(r.buy_price);
+  return Number.isFinite(n) ? n.toFixed(2) : '—';
 }
 
 function g12ZoneBgColor(zone) {
@@ -8465,7 +8479,7 @@ function updateSimTableHeaders(_data) {
   const sellEl = document.getElementById('sim-hdr-sell');
   if (buyEl) {
     buyEl.textContent = 'Buy Price';
-    buyEl.title = '(PLN/kWh)';
+    buyEl.title = 'G12 energy without distribution (PLN/kWh)';
   }
   if (sellEl) {
     sellEl.textContent = 'Sell Price';
@@ -9524,7 +9538,7 @@ function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_import ?? r.buy, 2)}</td>
     <td class="text-right text-gray-600 tabular-nums">${fmt(r.grid_export ?? r.feed_in, 2)}</td>
     <td class="text-right tabular-nums sim-soc-cell ${socCls}">${fmt(r.soc, 1)}</td>
-    <td class="text-right text-gray-600 tabular-nums sim-col-buy">${r.buy_price != null ? Number(r.buy_price).toFixed(2) : '—'}</td>
+    <td class="text-right text-gray-600 tabular-nums sim-col-buy">${simEnergyBuyPriceFmt(r)}</td>
     ${simRceCell(r, isTotal)}
     <td class="text-right tabular-nums sim-col-energy-cell ${energyCls}" title="${energyTitle}">${simEnergyFmt(energyCash)}</td>
     ${timerHtml}

@@ -847,6 +847,12 @@ async def get_simulation_for_date(
         day = today
     if day == today:
         if refresh:
-            return await hourly_plan_refresh(cfg, unlock_plan_soc=unlock_plan_soc)
-        return await build_plan_simulation(cfg, invalidate_inputs=False)
-    return await build_past_day_simulation(cfg, day)
+            out = await hourly_plan_refresh(cfg, unlock_plan_soc=unlock_plan_soc)
+        else:
+            out = await build_plan_simulation(cfg, invalidate_inputs=False)
+    else:
+        out = await build_past_day_simulation(cfg, day)
+    from .g12_pricing import g12_buy_energy_price_pln_kwh
+    out["g12_peak_energy_only_pln_kwh"] = round(g12_buy_energy_price_pln_kwh("peak", cfg), 4)
+    out["g12_offpeak_energy_only_pln_kwh"] = round(g12_buy_energy_price_pln_kwh("offpeak", cfg), 4)
+    return out

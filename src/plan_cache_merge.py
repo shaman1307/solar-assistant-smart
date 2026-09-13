@@ -51,40 +51,6 @@ def _timer_chg_ends_after(timer_txt: str, minute_of_day: int) -> bool:
     return False
 
 
-def _min_hourly_transfer_kwh(cfg: dict | None) -> float:
-    if cfg is None:
-        from .simulation_config import DEFAULT_TIMER_SCHEDULE
-
-        return float(DEFAULT_TIMER_SCHEDULE.get("min_hourly_transfer_kwh") or 0)
-    return float(
-        (cfg.get("timer_schedule") or {}).get("min_hourly_transfer_kwh") or 0
-    )
-
-
-def _release_locked_chg_if_invalid(
-    row: dict[str, Any],
-    fresh_row: dict[str, Any] | None,
-    *,
-    cfg: dict | None = None,
-) -> None:
-    """Clear a locked Chg when Bat Charge is below min_hourly_transfer."""
-    del fresh_row
-    if row.get("timer_schedule_manual"):
-        return
-    timer = str(row.get("timer_schedule") or "").strip()
-    if not timer.lower().startswith("chg"):
-        return
-    min_hourly = _min_hourly_transfer_kwh(cfg)
-    if min_hourly <= 0:
-        return
-    bat_chg = float(row.get("bat_charge") or 0)
-    if bat_chg + 1e-6 >= min_hourly:
-        return
-    row["timer_schedule"] = ""
-    row["action"] = ACTION_DISCHARGE_LOAD
-    row["hour_labels_locked"] = False
-
-
 def _should_preserve_imminent_chg(
     existing_row: dict[str, Any],
     fresh_row: dict[str, Any],
@@ -946,10 +912,6 @@ def merge_incremental_plan(
             _absorb_incoming_rce(row, fresh_row, cfg=cfg)
             # Violet live-SOC highlight: always the in-progress hour.
             row["soc_blended"] = True
-            # Locked Dis stays for the hour. Locked Chg may be dropped when the
-            # fresh plan cleared it (min-hourly / economics) or Bat Charge is
-            # still below min_hourly_transfer.
-            _release_locked_chg_if_invalid(row, fresh_row, cfg=cfg)
             out_rows.append(row)
             continue
 
@@ -1230,8 +1192,6 @@ def _merge_hour_from_quarter(
         else:
             out.append(copy.deepcopy(iq[q]))
     apply_q15_physics_to_row(merged, out)
-    # Drop sticky locked Chg when physics still show Bat Charge below min_hourly.
-    _release_locked_chg_if_invalid(merged, None, cfg=cfg)
     return merged
 
 

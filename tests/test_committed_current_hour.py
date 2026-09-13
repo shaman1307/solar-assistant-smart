@@ -66,12 +66,12 @@ def _cfg() -> dict:
     return cfg
 
 
-def test_front_load_skip_zero_keeps_charge_in_first_slot():
-    """skip_leading_slots=0 must not clear DP charge already in step 0."""
+def test_prepeak_pack_skip_zero_keeps_charge_in_only_offpeak_hour():
+    """skip_leading_slots=0 may fill hour 0 when it is the only pre-peak offpeak hour."""
     cfg = _cfg()
     params = get_simulation_params(cfg)
     eps = float(params["epsilon_kwh"])
-    # Pre-peak: charge in hour 0 and 1; peak at hour 3.
+    # Only hour 0 is pre-peak offpeak — skip=0 may fill it; skip=1 has nowhere to put Chg.
     controls = [
         HourControl(6.0, 0.0, False),
         HourControl(3.0, 0.0, False),
@@ -80,7 +80,7 @@ def test_front_load_skip_zero_keeps_charge_in_first_slot():
     ]
     pv = [0.0] * 4
     load = [0.2] * 4
-    buy = [OFF, OFF, OFF, PEAK]
+    buy = [OFF, PEAK, PEAK, PEAK]
     reserves = [plan_min_soc_kwh(cfg)] * 4
     kept = plan_battery_grid_charge(
         controls,
@@ -131,7 +131,6 @@ def test_front_load_skip_zero_keeps_charge_in_first_slot():
         skip_leading_slots=1,
     )
     assert cleared[0].grid_charge_kw < 0.05
-    assert cleared[1].grid_charge_kw > 0.05
 
 
 

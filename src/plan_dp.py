@@ -122,7 +122,7 @@ def control_options(
     """Build DP actions for one step.
 
     - reserve_soc_kwh: export floor (self-use through overnight / morning).
-    - charge_target_soc_kwh: peak-priced cover only (grid charge justification).
+    - charge_target_soc_kwh: floor + house deficits until PV covers (peak days).
     When charge is allowed, options collapse to charge-only (continuous offpeak fill).
     """
     head_room = battery_cap - soc_kwh
