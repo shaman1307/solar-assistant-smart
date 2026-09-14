@@ -489,6 +489,34 @@
       background: #f3f4f6;
       box-shadow: 0 1px 0 #e5e7eb;
     }
+    /* EA hour fill: G12 offpeak uses chart green at low mix (past = thinner wash).
+       Hover darkens the same hue (M3 on-surface layer) so it stays visible on pale fills. */
+    .sim-table-ea tbody tr[data-sim-hour] {
+      --sim-row-accent: #d1d5db;
+      --sim-row-bg: #ffffff;
+      --sim-hover-keep: 70%;
+      background-color: var(--sim-row-bg);
+      transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+    }
+    .sim-table-ea tbody tr.sim-row-offpeak {
+      --sim-row-accent: #2EAD84;
+      --sim-row-bg: color-mix(in srgb, var(--sim-row-accent) 22%, white);
+      --sim-hover-keep: 88%;
+    }
+    .sim-table-ea tbody tr.sim-row-offpeak-past {
+      --sim-row-accent: #2EAD84;
+      --sim-row-bg: color-mix(in srgb, var(--sim-row-accent) 10%, white);
+      --sim-hover-keep: 84%;
+    }
+    .sim-table-ea tbody tr.sim-row-past {
+      --sim-row-accent: #9ca3af;
+      --sim-row-bg: #f3f4f6;
+    }
+    @media (hover: hover) {
+      .sim-table-ea tbody tr[data-sim-hour]:hover {
+        background-color: color-mix(in srgb, var(--sim-row-bg) var(--sim-hover-keep), var(--sim-row-accent));
+      }
+    }
     .action-idle    { color: #1d4ed8; }
     .action-charge-grid { color: #065f46; }
     .action-charge-pv   { color: #b45309; }
@@ -9582,16 +9610,6 @@ function formatActionSpans(action) {
   }).join('<span class="text-gray-400">, </span>');
 }
 
-function simRowRceAboveOffpeak(r) {
-  const off = g12OffpeakPricePln();
-  const qs = r.rce_q15;
-  if (Array.isArray(qs) && qs.length) {
-    return qs.some((p) => p != null && Number(p) > off);
-  }
-  if (r.rce_price == null) return false;
-  return Number(r.rce_price) > off;
-}
-
 function simRceCell(r, isTotal) {
   if (isTotal) {
     return '<td class="text-right text-gray-600 tabular-nums sim-col-sell"></td>';
@@ -9613,15 +9631,14 @@ function simRceCell(r, isTotal) {
 
 function makeSimRow(r, isTotal, isTomorrowRemainder, isHistory) {
   const tr = document.createElement('tr');
-  let rowBg = '';
+  let rowTone = '';
   if (!isTotal && !isTomorrowRemainder) {
-    if (isHistory) {
-      rowBg = 'bg-gray-100';
-    } else if (simRowRceAboveOffpeak(r)) {
-      rowBg = 'bg-green-50';
-    }
+    const offpeak = r.g12_zone === 'offpeak';
+    if (isHistory && offpeak) rowTone = 'sim-row-offpeak-past';
+    else if (isHistory) rowTone = 'sim-row-past';
+    else if (offpeak) rowTone = 'sim-row-offpeak';
   }
-  tr.className = 'border-b border-gray-200 ' + (isTotal ? 'bg-gray-100 font-semibold sim-row-total' : 'hover:bg-gray-50 ' + rowBg);
+  tr.className = 'border-b border-gray-200 ' + (isTotal ? 'bg-gray-100 font-semibold sim-row-total' : rowTone);
   if (!isTotal && r.hour != null) tr.dataset.simHour = String(r.hour);
   if (!isTotal && r.plan_date) tr.dataset.simDate = r.plan_date;
   if (isHistory) tr.dataset.simHistory = '1';
