@@ -23,7 +23,7 @@ templates:
       ac_capacity_kw: 8.0
     battery:
       capacity_kwh: 43.0
-      max_charge_power_kw: 6.0
+      max_charge_power_kw: 9.2
       max_discharge_power_kw: 8.0
     ev:
       max_power_kw: 11.0
