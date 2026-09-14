@@ -133,7 +133,6 @@ def test_merge_at_hour_start_preserves_existing_chg_timer():
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     h1 = next(r for r in merged["rows"] if int(r["hour"]) == 1 and r["plan_date"] == "2026-07-21")
     assert h1["timer_schedule"] == "Chg 01:00-01:30 6.0kW cap25%", h1.get("timer_schedule")
-    assert h1["action"] == "Charging from Grid"
     assert h1["hour_labels_locked"] is True
 
 
@@ -190,7 +189,6 @@ def test_merge_keeps_locked_timer_on_current_hour():
     cur = merged["rows"][0]
     # Unparseable legacy text (no kW/cap) is left unchanged by clip.
     assert cur["timer_schedule"] == "Dis 08:00-08:45"
-    assert cur["action"] == "Discharging to Grid"
 
 
 def test_merge_updates_future_hour_timer_from_fresh():
@@ -220,8 +218,8 @@ def test_merge_updates_future_hour_timer_from_fresh():
     assert future["action"] == "Discharging to Grid"
 
 
-def test_merge_preserves_imminent_chg_when_fresh_wipes():
-    """Before :00, front-load must not erase next-hour Chg from SQLite."""
+def test_merge_next_hour_takes_fresh_timer():
+    """Next hour belongs to DP; SQLite Chg is replaced when fresh wipes it."""
     tz = ZoneInfo("Europe/Warsaw")
     now = datetime(2026, 7, 21, 1, 45, tzinfo=tz)
     existing = {
@@ -254,12 +252,13 @@ def test_merge_preserves_imminent_chg_when_fresh_wipes():
 
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
     h2 = next(r for r in merged["rows"] if int(r["hour"]) == 2)
-    assert h2["timer_schedule"] == "Chg 02:00-02:30 6.0kW cap24%"
-    assert h2["action"] == "Charging from Grid"
+    h3 = next(r for r in merged["rows"] if int(r["hour"]) == 3)
+    assert h2["timer_schedule"] == ""
+    assert h3["timer_schedule"] == "Chg 03:00-03:30 6.0kW cap20%"
 
 
-def test_merge_strips_slipped_next_hour_chg_while_current_open():
-    """Do not keep Chg 03:00 while Chg 02:00-02:30 is still the open window."""
+def test_merge_next_hour_keeps_fresh_chg_while_current_open():
+    """Current-hour Chg stays locked; H+1 takes the fresh optimizer timer."""
     tz = ZoneInfo("Europe/Warsaw")
     now = datetime(2026, 7, 21, 2, 15, tzinfo=tz)
     existing = {
@@ -292,8 +291,7 @@ def test_merge_strips_slipped_next_hour_chg_while_current_open():
     h2 = next(r for r in merged["rows"] if int(r["hour"]) == 2)
     h3 = next(r for r in merged["rows"] if int(r["hour"]) == 3)
     assert "Chg 02:00-02:30" in h2["timer_schedule"]
-    assert h3["timer_schedule"] == ""
-    assert h3["action"] == "Discharging to Load"
+    assert h3["timer_schedule"] == "Chg 03:00-03:30 6.0kW cap20%"
 
 
 def test_merge_preserves_history_rows():
@@ -375,12 +373,8 @@ def test_merge_backfills_history_holes_from_meters():
     assert by_hour[6]["history_hour"] is True
 
 
-def test_attach_promotes_hour_straddled_by_slow_rebuild():
-    """Forced rebuild entered at 12:59:5x, sim finished after 13:00 (rows from 13).
-
-    The hour-12 row must be promoted to history, not silently dropped
-    (this is how hours were lost on the Pi).
-    """
+def test_attach_keeps_current_hour_when_fresh_starts_later():
+    """Tick hour stays current; incoming plan_from_hour must not jump the boundary."""
     now = datetime(2026, 7, 7, 12, 59, 55, tzinfo=ZoneInfo("Europe/Warsaw"))
     existing = {
         "today_date": "2026-07-07",
@@ -390,18 +384,20 @@ def test_attach_promotes_hour_straddled_by_slow_rebuild():
     }
     result = {
         "today_date": "2026-07-07",
-        "plan_from_hour": 13,  # sim crossed into the next hour
+        "plan_from_hour": 13,
         "history_rows": [],
         "rows": [_row(13), _row(14)],
     }
     attach_immutable_history(result, existing, now=now)
-    assert [int(r["hour"]) for r in result["history_rows"]] == [12]
-    assert result["history_rows"][0]["timer_schedule"] == "Dis 12:00-12:45"
-    assert sorted(r["hour"] for r in result["rows"]) == [13, 14]
+    assert [int(r["hour"]) for r in result["history_rows"]] == []
+    assert result["plan_from_hour"] == 12
+    h12 = next(r for r in result["rows"] if int(r["hour"]) == 12)
+    assert h12["timer_schedule"] == "Dis 12:00-12:45"
+    assert sorted(r["hour"] for r in result["rows"]) == [12, 13, 14]
 
 
-def test_merge_promotes_hour_straddled_by_slow_sim():
-    """Scheduler tick at 13:59:5x whose fresh sim starts at 14 must not drop hour 13."""
+def test_merge_keeps_current_hour_when_fresh_starts_later():
+    """Job tick at 13:59 keeps H13 current even if fresh sim rows start at 14."""
     now = datetime(2026, 7, 7, 13, 59, 58, tzinfo=ZoneInfo("Europe/Warsaw"))
     existing = {
         "today_date": "2026-07-07",
@@ -417,9 +413,11 @@ def test_merge_promotes_hour_straddled_by_slow_sim():
         "rows": [_row(14), _row(15)],
     }
     merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
-    assert _hist_hours(merged) == [13]
-    assert merged["history_rows"][0]["timer_schedule"] == "Dis 13:00-13:45"
-    assert sorted(r["hour"] for r in merged["rows"]) == [14, 15]
+    assert _hist_hours(merged) == []
+    h13 = next(r for r in merged["rows"] if int(r["hour"]) == 13)
+    assert h13["timer_schedule"] == "Dis 13:00-13:45"
+    assert sorted(r["hour"] for r in merged["rows"]) == [13, 14, 15]
+    assert merged["plan_from_hour"] == 13
 
 
 def test_promoted_history_rows_drop_blended_soc_flag():
@@ -787,9 +785,8 @@ def test_merge_incremental_at_30_quarter_pattern():
     merged = merge_incremental_plan(existing, fresh, now=now, metrics=metrics, cfg=cfg)
     cur = next(r for r in merged["rows"] if r["hour"] == 8)
 
-    # timer/action locked — not overwritten by optimizer
+    # timer locked — not overwritten by optimizer
     assert cur["timer_schedule"] == "Dis 08:00-08:45"
-    assert cur["action"] == "Discharging to Grid"
     # q0 — freeze-ready at :30
     assert cur["q15"][0]["from_actual"] is True
     assert cur["q15"][0]["production"] == 0.5
@@ -843,7 +840,6 @@ def test_datafix_before_first_quarter_keeps_eoh_soc():
 
     out = next(r for r in merged["rows"] if r["hour"] == 8)
     assert out["timer_schedule"] == "Dis 08:00-08:45"
-    assert out["action"] == "Discharging to Grid"
     # Hour column stays end-of-hour, not live 24%.
     assert float(out["soc"]) == pytest.approx(22.4, abs=0.15)
     assert float(out["soc"]) != pytest.approx(24.0, abs=0.05)
@@ -895,6 +891,10 @@ def test_quarter_tick_now_floors_to_boundary():
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 16, 5, tzinfo=tz)).minute == 15
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 31, 2, tzinfo=tz)).minute == 30
     assert quarter_tick_now(datetime(2026, 8, 1, 20, 47, tzinfo=tz)).minute == 45
+    tick = quarter_tick_now(datetime(2026, 8, 1, 10, 0, 2, tzinfo=tz))
+    assert tick.hour == 10
+    assert tick.minute == 0
+    assert tick.second == 0
 
 
 def test_late_promote_finalizes_q3_from_influx():
@@ -1055,6 +1055,53 @@ def test_write_guard_fills_missing_rce_on_frozen_hour():
     assert h19["rce_price"] == pytest.approx(0.7666)
 
 
+def test_write_guard_clears_export_cash_when_hour_has_no_export():
+    """Frozen hour with meter grid_export 0 must not keep planned export credit."""
+    from src.plan_cache_merge import guard_future_quarters_on_write
+
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 9, 13, 23, 15, tzinfo=tz)
+    hist = _row(20, locked=True)
+    hist["plan_date"] = "2026-09-13"
+    hist["history_hour"] = True
+    hist["grid_import"] = 0.03
+    hist["grid_export"] = 0.0
+    hist["bat_discharge"] = 0.909
+    hist["battery"] = -0.909
+    hist["export_revenue"] = 0.9071
+    hist["export_planned"] = True
+    hist["energy_cost"] = -0.8856
+    hist["rce_price"] = 1.2409
+    hist["buy_price"] = 1.2444
+    hist["g12_zone"] = "peak"
+    for slot in hist["q15"]:
+        slot["from_actual"] = True
+        slot["grid_export"] = 0.0
+        slot["grid_import"] = 0.0075
+        slot["battery"] = -0.227
+    incoming_hist = copy.deepcopy(hist)
+    existing = {
+        "today_date": "2026-09-13",
+        "plan_from_hour": 23,
+        "history_rows": [hist],
+        "rows": [_row(23)],
+    }
+    existing["rows"][0]["plan_date"] = "2026-09-13"
+    incoming = {
+        "today_date": "2026-09-13",
+        "plan_from_hour": 23,
+        "history_rows": [incoming_hist],
+        "rows": [_row(23)],
+        "delta_kwh": 0.0,
+    }
+    incoming["rows"][0]["plan_date"] = "2026-09-13"
+    guarded = guard_future_quarters_on_write(incoming, existing, now=now)
+    h20 = next(r for r in guarded["history_rows"] if int(r["hour"]) == 20)
+    assert float(h20["grid_export"]) == pytest.approx(0.0)
+    assert h20["export_planned"] is False
+    assert float(h20["export_revenue"]) == pytest.approx(0.0)
+
+
 def test_copy_future_keeps_rce_when_fresh_is_empty():
     from src.plan_cache_merge import _copy_future_row, _keep_rce_if_incoming_empty
 
@@ -1158,4 +1205,42 @@ def test_apply_actual_quarter_keeps_planned_rce():
     )
     assert row["q15"][0]["from_actual"] is True
     assert row["q15"][0]["rce"] == pytest.approx(0.42)
+
+
+def test_merge_job_tick_100002_locks_empty_timer_and_takes_fresh_next_hour():
+    """now=10:00:02 → current H10 timer from SQLite; H11 from optimizer."""
+    tz = ZoneInfo("Europe/Warsaw")
+    now = datetime(2026, 7, 21, 10, 0, 2, tzinfo=tz)
+    existing = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 9,
+        "history_rows": [],
+        "totals": {},
+        "rows": [
+            _row(10, timer="", action="Discharging to Load", locked=False),
+            _row(11, timer="", action="Discharging to Load"),
+        ],
+    }
+    for r in existing["rows"]:
+        r["plan_date"] = "2026-07-21"
+    fresh = {
+        "today_date": "2026-07-21",
+        "plan_from_hour": 10,
+        "history_rows": [],
+        "totals": {},
+        "plan_soc_q15": {"today": [None] * 96, "tomorrow": [None] * 96},
+        "rows": [
+            _row(10, timer="Dis 10:00-10:45 7.5kW cap30%", action="Discharging to Grid and Load"),
+            _row(11, timer="Chg 11:00-11:30 6.0kW cap28%", action="Charging from Grid"),
+        ],
+    }
+    for r in fresh["rows"]:
+        r["plan_date"] = "2026-07-21"
+    merged = merge_incremental_plan(existing, fresh, now=now, cfg=_cfg())
+    h10 = next(r for r in merged["rows"] if int(r["hour"]) == 10)
+    h11 = next(r for r in merged["rows"] if int(r["hour"]) == 11)
+    assert not str(h10.get("timer_schedule") or "").strip()
+    assert h10["hour_labels_locked"] is True
+    assert h11["timer_schedule"] == "Chg 11:00-11:30 6.0kW cap28%"
+    assert merged["plan_from_hour"] == 10
 

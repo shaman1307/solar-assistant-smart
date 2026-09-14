@@ -164,11 +164,11 @@ async def _set_work_mode_if_needed(
         )
 
 
-async def run_work_mode_hour_start() -> dict[str, Any]:
+async def run_work_mode_hour_start(now=None) -> dict[str, Any]:
     """:00 — On-grid when Timer Schedule (not charge-grid) or SOC is 100%."""
     global _last_work_mode_sync
 
-    now = now_warsaw()
+    now = now or now_warsaw()
     hour = now.hour
     ran_at = now.strftime("%Y-%m-%d %H:%M:%S")
     status: dict[str, Any] = {
@@ -291,11 +291,11 @@ def limit_home_due_for_timer(
     return True, None
 
 
-async def run_work_mode_limit_home() -> dict[str, Any]:
+async def run_work_mode_limit_home(now=None) -> dict[str, Any]:
     """:00/:15/:30/:45 — Limit home when timer empty or discharge ended."""
     global _last_work_mode_sync
 
-    now = now_warsaw()
+    now = now or now_warsaw()
     hour = now.hour
     ran_at = now.strftime("%Y-%m-%d %H:%M:%S")
     status: dict[str, Any] = {

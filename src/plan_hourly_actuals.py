@@ -1569,7 +1569,10 @@ def sync_blended_current_hour_row(
     sa_timer_txt: str | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC."""
+    """Apply blended q15 battery/grid to an in-progress EA row; keep display PV/load/SOC.
+
+    Timer Schedule stays as stored. Action follows battery/grid fact.
+    """
     from .timer_plan import (
         classify_action,
     )
@@ -1591,8 +1594,7 @@ def sync_blended_current_hour_row(
     )
     if row.get("timer_schedule_manual"):
         return
-    # IMPORTANT: Timer Schedule for the current hour must not change mid-hour.
-    # It is computed at :00 and then stays frozen for display until the hour ends.
+    # Timer Schedule for the current hour stays as stored in SQLite.
     return
 
 

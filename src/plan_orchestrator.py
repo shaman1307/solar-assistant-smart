@@ -84,6 +84,7 @@ def run_horizon_smart_plans(
     soc_kwh: float,
     day_start_soc: float,
     epsilon: float,
+    skip_export_hours: set[int] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Run the 15-min optimizer for today/tomorrow given the committed current hour."""
     smart_today: dict[str, Any] | None = None
@@ -128,6 +129,7 @@ def run_horizon_smart_plans(
                 from_hour=opt_from,
                 horizon_hours=opt_horizon,
                 front_load_skip_leading_slots=0,
+                skip_export_hours=skip_export_hours,
             )
             smart_today = (rolling or {}).get("today")
             smart_tomorrow = (rolling or {}).get("tomorrow")
@@ -143,6 +145,7 @@ def run_horizon_smart_plans(
                 initial_soc_kwh=float(committed_end_soc),
                 from_hour=opt_from,
                 front_load_skip_leading_slots=0,
+                skip_export_hours=skip_export_hours,
             )
     elif need_tomorrow_hours > 0:
         rolling = run_rolling_smart_q15_plan(
@@ -157,6 +160,7 @@ def run_horizon_smart_plans(
             initial_soc_kwh=soc_kwh,
             from_hour=plan_from_hour,
             horizon_hours=hour_steps,
+            skip_export_hours=skip_export_hours,
         )
         smart_today = (rolling or {}).get("today")
         smart_tomorrow = (rolling or {}).get("tomorrow")
@@ -172,6 +176,7 @@ def run_horizon_smart_plans(
             plan_from_hour=plan_from_hour,
             day_start_soc_kwh=day_start_soc,
             live_soc_kwh=soc_kwh,
+            skip_export_hours=skip_export_hours,
         )
     return smart_today, smart_tomorrow
 
@@ -230,8 +235,6 @@ def assemble_ea_plan_rows(
                     fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0
                     flo_h = float(load_merged[h]) if h < len(load_merged) else 0.0
                     sa_timer = str(committed_hour.get("timer_schedule") or "").strip()
-                    if not sa_timer:
-                        sa_timer = sa_discharge_timer_for_hour(rules, h, cfg=cfg) or ""
                     opt_slots = opt_slots_from_committed_q15(slots_now)
                     blended_q15 = build_blended_current_hour_q15(
                         h,
@@ -263,7 +266,6 @@ def assemble_ea_plan_rows(
                         now=now,
                     )
                     row["timer_schedule"] = committed_hour.get("timer_schedule", "")
-                    row["action"] = committed_hour.get("action", "")
                     row["hour_labels_locked"] = True
                     has_timer = bool(str(committed_hour.get("timer_schedule") or "").strip())
                     blended_anchor_kwh = (

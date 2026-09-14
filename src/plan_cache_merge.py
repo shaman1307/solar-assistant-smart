@@ -23,96 +23,10 @@ from .plan_hourly_actuals import (
     overlay_meter_soc_on_rows,
     refresh_row_grid_cash,
 )
-from .simulation_config import plan_min_soc_kwh, plan_min_soc_pct
-from .timer_plan import (
-    ACTION_DISCHARGE_LOAD,
-    parse_timer_schedule_segments,
-)
+from .simulation_config import get_simulation_params, plan_min_soc_kwh, plan_min_soc_pct
+from .timer_plan import classify_action
 
 log = logging.getLogger(__name__)
-
-
-def _timer_has_chg(timer_txt: str) -> bool:
-    return str(timer_txt or "").strip().startswith("Chg")
-
-
-def _timer_chg_ends_after(timer_txt: str, minute_of_day: int) -> bool:
-    """True when any Chg segment ends after *minute_of_day* (window not finished)."""
-    for seg in parse_timer_schedule_segments(timer_txt):
-        if seg.get("kind") != "chg":
-            continue
-        try:
-            hh, mm = str(seg["to"]).split(":")
-            end_min = int(hh) * 60 + int(mm)
-        except (TypeError, ValueError):
-            continue
-        if end_min > minute_of_day:
-            return True
-    return False
-
-
-def _should_preserve_imminent_chg(
-    existing_row: dict[str, Any],
-    fresh_row: dict[str, Any],
-    *,
-    plan_date: str,
-    hour: int,
-    today_str: str,
-    current_hour: int,
-) -> bool:
-    """Keep SQLite next-hour Chg when the fresh sim clears that timer before :00.
-
-    Front-load often slips charge to hour+1; keep the committed Chg so the :00
-    SA sync still sees the planned timer. Thin Chg is cleared elsewhere via
-    min_hourly / economics before it is written.
-    """
-    if plan_date != today_str or hour != current_hour + 1:
-        return False
-    if existing_row.get("timer_schedule_manual"):
-        return False
-    existing_timer = str(existing_row.get("timer_schedule") or "").strip()
-    fresh_timer = str(fresh_row.get("timer_schedule") or "").strip()
-    if not _timer_has_chg(existing_timer):
-        return False
-    return not fresh_timer
-
-
-def _strip_slipped_next_hour_chg(
-    row: dict[str, Any],
-    existing_row: dict[str, Any] | None,
-    *,
-    current_timer: str,
-    now: datetime,
-) -> bool:
-    """Clear next-hour Chg while the current hour Chg window is still open.
-
-    Prevents a second front-load Chg (e.g. 03:00-03:30) while 02:00-02:30 is
-    still the active commitment — recovery belongs after the window ends.
-    """
-    if not _timer_has_chg(current_timer):
-        return False
-    now_min = now.hour * 60 + now.minute
-    if not _timer_chg_ends_after(current_timer, now_min):
-        return False
-    if not _timer_has_chg(str(row.get("timer_schedule") or "")):
-        return False
-    prev_timer = (
-        str(existing_row.get("timer_schedule") or "").strip()
-        if existing_row is not None
-        else ""
-    )
-    prev_action = (
-        str(existing_row.get("action") or "").strip()
-        if existing_row is not None
-        else ""
-    )
-    if prev_timer and not _timer_has_chg(prev_timer):
-        row["timer_schedule"] = prev_timer
-        row["action"] = prev_action or ACTION_DISCHARGE_LOAD
-    else:
-        row["timer_schedule"] = ""
-        row["action"] = ACTION_DISCHARGE_LOAD
-    return True
 
 
 def last_completed_quarter_tick(now: datetime) -> tuple[int, int]:
@@ -541,10 +455,9 @@ def _merge_current_hour_q15(
 ) -> None:
     """Apply freeze-ready actuals; rebuild open pull + tail q15 from *fresh_row*.
 
-    Timer Schedule / Action are left untouched (caller keeps them locked).
-    Freeze-ready quarters get Influx once (`from_actual=True`). The open pull
-    quarter and future quarters take Production, battery, grid, SOC from the
-    fresh optimizer blend (Influx partial + forecast fill on the pull tick).
+    Timer Schedule stays as stored. Freeze-ready quarters get Influx once
+    (`from_actual=True`). The open pull quarter and future quarters take
+    Production, battery, grid, SOC from the fresh optimizer blend.
 
     Before the first quarter ends, keep the :00 end-of-hour SOC chain on the
     locked row — do not replace it with a mid-hour live-seeded fresh curve —
@@ -624,27 +537,15 @@ def _as_history_row(row: dict[str, Any]) -> dict[str, Any]:
     # Freeze Timer/Action once the hour leaves the live plan.
     if str(hist.get("timer_schedule") or "").strip() or hist.get("timer_schedule_manual"):
         hist["hour_labels_locked"] = True
+    from .grid_config import merge_grid_defaults
+    refresh_row_grid_cash(hist, merge_grid_defaults({}))
     return hist
 
 
 def _effective_plan_boundary_hour(plan: dict[str, Any] | None, now: datetime) -> int:
-    """Wall hour, or plan_from_hour when the sim already crossed into the next hour.
-
-    write_plan guard must use the same boundary as merge_incremental_plan /
-    attach_immutable_history — otherwise a straddle refresh that finishes after
-    :00 with now still HH:59 drops the completed hour from history (meters
-    backfill later without Timer Schedule).
-    """
-    current_hour = int(now.hour)
-    if not isinstance(plan, dict):
-        return current_hour
-    try:
-        sim_from = int(plan.get("plan_from_hour"))
-    except (TypeError, ValueError):
-        return current_hour
-    if sim_from > current_hour:
-        return sim_from
-    return current_hour
+    """Current hour from the job tick (*now*), not from plan_from_hour."""
+    del plan
+    return int(now.hour)
 
 
 def _strip_blended_flags(history: list[dict]) -> None:
@@ -705,19 +606,6 @@ def merge_incremental_plan(
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     current_hour = now.hour
-    # Fresh sim may start one hour later than `now` if the hour flipped while
-    # it was computed — treat that later hour as current so nothing is dropped.
-    try:
-        fresh_from_hour = int(fresh.get("plan_from_hour"))
-    except (TypeError, ValueError):
-        fresh_from_hour = current_hour
-    if fresh_from_hour > current_hour:
-        log.warning(
-            "Fresh sim crossed hour boundary during merge (%02d -> %02d)",
-            current_hour,
-            fresh_from_hour,
-        )
-        current_hour = fresh_from_hour
     battery_cap = float(cfg["battery"]["capacity_kwh"])
     today_hourly = (metrics or {}).get("today_hourly")
     series_10min = (metrics or {}).get("series_10min")
@@ -883,7 +771,7 @@ def merge_incremental_plan(
                 if now.minute == 0:
                     _lock_hour_labels(row, fresh_row)
                 else:
-                    # Missed :00 — lock the timer/action already in SQLite for this hour.
+                    # Missed :00 — lock the timer already in SQLite for this hour.
                     row["hour_labels_locked"] = True
             # Remaining q15 from fresh (weather/plan), then completed → fact and
             # SOC rechain from live so mid-hour stays continuous.
@@ -910,6 +798,15 @@ def merge_incremental_plan(
                 live_soc_kwh=live_soc_kwh if live_soc_kwh is not None else 0.0,
             )
             _absorb_incoming_rce(row, fresh_row, cfg=cfg)
+            eps = float(get_simulation_params(cfg)["epsilon_kwh"])
+            row["action"] = classify_action(
+                bat_charge=float(row.get("bat_charge") or 0),
+                bat_discharge=float(row.get("bat_discharge") or 0),
+                grid_import=float(row.get("grid_import") or 0),
+                grid_export=float(row.get("grid_export") or 0),
+                production=float(row.get("production") or 0),
+                epsilon=eps,
+            )
             # Violet live-SOC highlight: always the in-progress hour.
             row["soc_blended"] = True
             out_rows.append(row)
@@ -919,55 +816,18 @@ def merge_incremental_plan(
         _copy_future_row(row, fresh_row)
         _keep_rce_if_incoming_empty(row, existing_row)
         row.pop("soc_blended", None)
-        if _should_preserve_imminent_chg(
-            existing_row,
-            fresh_row,
-            plan_date=plan_date,
-            hour=hour,
-            today_str=today_str,
-            current_hour=current_hour,
-        ):
-            row["timer_schedule"] = existing_row.get("timer_schedule", "")
-            row["action"] = existing_row.get("action", "")
-            log.info(
-                "Plan merge — preserved imminent Chg on H%02d (fresh wiped timer)",
-                hour,
-            )
         out_rows.append(row)
 
-    # While current-hour Chg is still open, drop slipped Chg on the next hour.
-    current_row = next(
-        (
-            r for r in out_rows
-            if str(r.get("plan_date") or "") == today_str
-            and int(r.get("hour", -1)) == current_hour
-        ),
-        None,
-    )
-    current_timer = (
-        str(current_row.get("timer_schedule") or "").strip()
-        if current_row is not None
-        else ""
-    )
-    if current_timer:
-        for row in out_rows:
-            if str(row.get("plan_date") or "") != today_str:
-                continue
-            if int(row.get("hour", -1)) != current_hour + 1:
-                continue
-            existing_next = existing_by_key.get((today_str, current_hour + 1))
-            if _strip_slipped_next_hour_chg(
-                row,
-                existing_next,
-                current_timer=current_timer,
-                now=now,
-            ):
-                log.info(
-                    "Plan merge — cleared slipped Chg on H%02d while H%02d Chg still open",
-                    current_hour + 1,
-                    current_hour,
-                )
-            break
+    if _find_row(out_rows, today_str, current_hour) is None:
+        existing_current = existing_by_key.get((today_str, current_hour))
+        if existing_current is not None:
+            kept = copy.deepcopy(existing_current)
+            kept["hour_labels_locked"] = True
+            kept["soc_blended"] = True
+            out_rows.append(kept)
+            out_rows.sort(
+                key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
+            )
 
     merged["history_rows"] = history
     merged["rows"] = out_rows
@@ -1162,19 +1022,17 @@ def _merge_hour_from_quarter(
     """Keep completed/from_actual (and optionally q < from_q); rest from incoming.
 
     Meter actuals: prefer *incoming* when it also marks ``from_actual`` (Influx
-    refresh / datafix). Otherwise keep existing actuals (I7). Locked
-    timer/action stay as stored (empty, Chg, or Dis).
+    refresh / datafix). Otherwise keep existing actuals (I7). Locked Timer
+    Schedule stays as stored (empty, Chg, or Dis). Action follows battery/grid.
     """
     merged = copy.deepcopy(incoming_row)
     existing_timer = str(existing_row.get("timer_schedule") or "")
     if existing_row.get("timer_schedule_manual"):
         merged["timer_schedule"] = existing_timer
-        merged["action"] = existing_row.get("action", "")
         merged["hour_labels_locked"] = True
         merged["timer_schedule_manual"] = True
     elif existing_row.get("hour_labels_locked"):
         merged["timer_schedule"] = existing_timer
-        merged["action"] = existing_row.get("action", "")
         merged["hour_labels_locked"] = True
 
     eq = _ensure_q15_length(list(existing_row.get("q15") or []))
@@ -1192,6 +1050,18 @@ def _merge_hour_from_quarter(
         else:
             out.append(copy.deepcopy(iq[q]))
     apply_q15_physics_to_row(merged, out)
+    from .grid_config import merge_grid_defaults
+    cash_cfg = cfg if cfg is not None else merge_grid_defaults({})
+    refresh_row_grid_cash(merged, cash_cfg)
+    eps = float(get_simulation_params(cash_cfg)["epsilon_kwh"])
+    merged["action"] = classify_action(
+        bat_charge=float(merged.get("bat_charge") or 0),
+        bat_discharge=float(merged.get("bat_discharge") or 0),
+        grid_import=float(merged.get("grid_import") or 0),
+        grid_export=float(merged.get("grid_export") or 0),
+        production=float(merged.get("production") or 0),
+        epsilon=eps,
+    )
     return merged
 
 
@@ -1242,6 +1112,8 @@ def _absorb_incoming_q15_actuals(dst: dict[str, Any], src: dict[str, Any]) -> bo
     if changed:
         dst["q15"] = dq
         apply_q15_physics_to_row(dst, dq)
+    from .grid_config import merge_grid_defaults
+    refresh_row_grid_cash(dst, merge_grid_defaults({}))
     return changed
 
 
@@ -1310,24 +1182,15 @@ def guard_future_quarters_on_write(
       - past hours in history_rows stay as frozen (timer/action/energy)
       - exception: absorb newly frozen Influx q15 into still-unfrozen slots
         (just-completed tick / recovered q3) — never rewrite from_actual
-      - current hour: completed/from_actual q15 kept; open q15 from incoming
+      - current hour: Timer Schedule from SQLite; q15/meters/Action/cash from incoming
       - future hours / tomorrow: taken from incoming
     Empty SQLite or new calendar day: deep-copy of *incoming* (first seed only).
 
-    Boundary hour is max(wall clock, incoming.plan_from_hour) so a straddle
-    refresh that finishes after :00 cannot drop the completed hour (and its
-    Timer Schedule) before it is written to SQLite.
+    Boundary hour is the job tick (*now*.hour).
     """
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     current_hour = _effective_plan_boundary_hour(incoming, now)
-    if current_hour > int(now.hour):
-        log.warning(
-            "write_plan guard — sim crossed hour boundary (%02d -> %02d); "
-            "promoting gap into history",
-            now.hour,
-            current_hour,
-        )
     result = copy.deepcopy(incoming)
 
     if existing is None or str(existing.get("today_date") or "") != today_str:
@@ -1405,6 +1268,15 @@ def guard_future_quarters_on_write(
         else:
             live_rows.append(row)
 
+    if existing_current is not None and _find_row(live_rows, today_str, current_hour) is None:
+        kept = copy.deepcopy(existing_current)
+        kept["hour_labels_locked"] = True
+        kept["soc_blended"] = True
+        live_rows.append(kept)
+        live_rows.sort(
+            key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
+        )
+
     if stripped:
         log.warning(
             "write_plan guard — stripped %d past hour(s) from rows before %02d:00",
@@ -1416,11 +1288,7 @@ def guard_future_quarters_on_write(
     result["rows"] = live_rows
     result["has_history_rows"] = bool(history)
     result["today_date"] = today_str
-    # Keep plan_from aligned with the boundary used for promote/strip.
-    try:
-        result["plan_from_hour"] = max(int(result.get("plan_from_hour") or 0), current_hour)
-    except (TypeError, ValueError):
-        result["plan_from_hour"] = current_hour
+    result["plan_from_hour"] = current_hour
 
     today_plan = [
         r for r in live_rows
@@ -1452,20 +1320,6 @@ def attach_immutable_history(
     now = now or now_warsaw()
     today_str = now.strftime("%Y-%m-%d")
     current_hour = now.hour
-    # The fresh sim may have crossed an hour boundary while it was computed
-    # (rows already start at now.hour+1). Use the later boundary so the hour
-    # in between is promoted into history.
-    try:
-        sim_from_hour = int(result.get("plan_from_hour"))
-    except (TypeError, ValueError):
-        sim_from_hour = current_hour
-    if sim_from_hour > current_hour:
-        log.warning(
-            "Sim crossed hour boundary during rebuild (%02d -> %02d) — promoting the gap",
-            current_hour,
-            sim_from_hour,
-        )
-        current_hour = sim_from_hour
 
     if existing is not None and str(existing.get("today_date") or "") == today_str:
         history = copy.deepcopy(existing.get("history_rows") or [])
@@ -1516,6 +1370,18 @@ def attach_immutable_history(
         if plan_date == today_str and hour < current_hour:
             continue
         live_rows.append(row)
+
+    if existing is not None and str(existing.get("today_date") or "") == today_str:
+        if _find_row(live_rows, today_str, current_hour) is None:
+            existing_current = _find_row(existing.get("rows") or [], today_str, current_hour)
+            if existing_current is not None:
+                kept = copy.deepcopy(existing_current)
+                kept["hour_labels_locked"] = True
+                kept["soc_blended"] = True
+                live_rows.append(kept)
+                live_rows.sort(
+                    key=lambda r: (str(r.get("plan_date") or ""), int(r.get("hour", -1))),
+                )
 
     result["history_rows"] = history
     result["rows"] = live_rows

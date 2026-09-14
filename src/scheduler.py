@@ -3,8 +3,8 @@ Balance automation scheduler.
 
   - Nightly at 23:59 Europe/Warsaw: build Load+PV day cache for tomorrow and day-after,
     then refresh charge-rate estimate in config (Δ).
-  - Every :00/:15/:31/:45: refresh Open-Meteo PV (remaining today + tomorrow), then Plan Simulation.
-  - SA Timer Schedule at :00; Work mode On-grid at :00, Limit home at :00/:15/:31/:45.
+  - Every :00:02/:15:02/:31:02/:45:02: refresh Open-Meteo PV, then Plan Simulation, then SA.
+  - One tick snapshot per job (floor to :00/:15/:30/:45) is shared by sim, merge, write, SA.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ async def run_nightly_forecast_cache() -> dict[str, Any]:
 
 
 async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, Any]:
-    """:00/:15/:31/:45 — refresh SQLite plan; SA sync when smart mode enabled."""
+    """:00:02/:15:02/:31:02/:45:02 — refresh SQLite plan; SA sync when smart mode enabled."""
     del sync_sa
     global _last_hourly_sync
 
@@ -139,9 +139,9 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
 
         if _smart_mode_enabled(cfg):
             if tick_now.minute == 0:
-                status["hour_boundary"] = await run_hour_boundary_start()
+                status["hour_boundary"] = await run_hour_boundary_start(now=tick_now)
             elif tick_now.minute in (15, 30, 45):
-                status["hour_boundary"] = await run_hour_boundary_limit_home()
+                status["hour_boundary"] = await run_hour_boundary_limit_home(now=tick_now)
 
         _last_hourly_sync = status
         return status
@@ -213,7 +213,7 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
     register_hour_boundary_jobs(scheduler)
     scheduler.add_job(
         run_quarter_plan_refresh,
-        trigger=CronTrigger(minute="0,15,31,45", timezone="Europe/Warsaw"),
+        trigger=CronTrigger(minute="0,15,31,45", second=2, timezone="Europe/Warsaw"),
         id="quarter_plan_refresh",
         replace_existing=True,
         misfire_grace_time=120,
@@ -222,6 +222,6 @@ def create_scheduler(cfg: dict) -> AsyncIOScheduler:
     )
     log.info(
         "Scheduler: month_history at 00:05; forecast cache + balance Δ at 23:59; plan refresh + SA sync at "
-        ":00/:15/:31/:45 — Europe/Warsaw.",
+        ":00:02/:15:02/:31:02/:45:02 — Europe/Warsaw.",
     )
     return scheduler

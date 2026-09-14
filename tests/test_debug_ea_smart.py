@@ -219,7 +219,7 @@ def test_apply_locked_hour_labels_restores_mid_hour():
     apply_locked_hour_labels_from_plan(fresh, existing, now)
     row = fresh["rows"][0]
     assert row["timer_schedule"] == "10:00-10:45 Dis"
-    assert row["action"] == "Discharge"
+    assert row["action"] == "Charge"
     assert row["hour_labels_locked"] is True
 
 

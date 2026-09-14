@@ -224,11 +224,11 @@ async def _peek_limit_home_due(
     return due, end, timer_txt
 
 
-async def run_hour_boundary_start() -> dict[str, Any]:
+async def run_hour_boundary_start(now=None) -> dict[str, Any]:
     """:00 — export start modes (WM→BDM) then timer; or end: timed off → Limit modes."""
     global _last_hour_boundary_sync
 
-    now = now_warsaw()
+    now = now or now_warsaw()
     hour = now.hour
     ran_at = now.strftime("%Y-%m-%d %H:%M:%S")
     status: dict[str, Any] = {
@@ -258,7 +258,7 @@ async def run_hour_boundary_start() -> dict[str, Any]:
             row = next(r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL")
             status["timer_schedule"] = str(row.get("timer_schedule") or "").strip()
 
-        status["work_mode"] = await run_work_mode_hour_start()
+        status["work_mode"] = await run_work_mode_hour_start(now=now)
         status["timer_sync"] = await _sync_timer_from_hour_row(cfg, rows, hour)
 
         # Charge-grid prepare already set Limit home; do not run Limit-home again
@@ -282,7 +282,7 @@ async def run_hour_boundary_start() -> dict[str, Any]:
             )
             if due and not discharge_still_active:
                 status["timed_power"] = await _clear_timed_power_flags(cfg)
-            limit_status = await run_work_mode_limit_home()
+            limit_status = await run_work_mode_limit_home(now=now)
             status["work_mode_limit"] = limit_status
 
         wm = status["work_mode"]
@@ -322,7 +322,7 @@ async def run_hour_boundary_start() -> dict[str, Any]:
         return status
 
 
-async def run_hour_boundary_limit_home() -> dict[str, Any]:
+async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
     """:15/:30/:45 — end export: Timed off → Limit home → UPS/home battery.
 
     Also write the open Chg/Dis timer if the :00 sync was missed, so the inverter
@@ -330,7 +330,7 @@ async def run_hour_boundary_limit_home() -> dict[str, Any]:
     """
     global _last_hour_boundary_sync
 
-    now = now_warsaw()
+    now = now or now_warsaw()
     status: dict[str, Any] = {
         "ran_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "phase": "limit_home",
@@ -374,7 +374,7 @@ async def run_hour_boundary_limit_home() -> dict[str, Any]:
             if _sa_missing_active_plan_timer(timer_txt, now, rules):
                 if charge_active:
                     # Limit home + UPS/home before enabling timed charge.
-                    status["work_mode"] = await run_work_mode_hour_start()
+                    status["work_mode"] = await run_work_mode_hour_start(now=now)
                 status["timer_sync"] = await _sync_timer_from_hour_row(
                     cfg, rows, now.hour,
                 )
@@ -402,14 +402,14 @@ async def run_hour_boundary_limit_home() -> dict[str, Any]:
             # 1) Clear Timed discharge checkbox before mode changes.
             status["timed_power"] = await _clear_timed_power_flags(cfg)
             # 2–3) Limit home work mode, then UPS/home battery (via apply_home_modes).
-            limit_status = await run_work_mode_limit_home()
+            limit_status = await run_work_mode_limit_home(now=now)
         else:
             status["timed_power"] = {
                 "skipped": True,
                 "skip_reason": "discharge_not_ended",
                 "ok": True,
             }
-            limit_status = await run_work_mode_limit_home()
+            limit_status = await run_work_mode_limit_home(now=now)
 
         status["work_mode_limit"] = limit_status
         if status.get("work_mode") is None:

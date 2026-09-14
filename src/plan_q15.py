@@ -1029,7 +1029,7 @@ def build_smart_plan_hour_row(
         "export_credit": cash["export_credit"],
         "g12_zone": g12_zone,
         "buy_price": round(buy_price, 4),
-        "export_planned": batt_exp > epsilon,
+        "export_planned": float(grid_export) > epsilon,
     }
 
 

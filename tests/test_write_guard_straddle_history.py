@@ -1,4 +1,4 @@
-"""write_plan guard must not drop a completed hour on straddle refresh."""
+"""write_plan guard uses the job tick hour; previous hour promotes at :00."""
 
 from __future__ import annotations
 
@@ -44,11 +44,8 @@ def _row(hour: int, *, timer: str, in_history: bool = False) -> dict:
     }
 
 
-def test_write_guard_straddle_keeps_dis_hour_in_history():
-    """Merge promoted H19 with Dis; write at 19:59 with plan_from=20 must keep it.
-
-    Repro of 2026-08-12 20:00: history lost Dis on H19, meters backfill empty timer.
-    """
+def test_write_guard_tick_hour_keeps_current_not_plan_from():
+    """Incoming plan_from=20 at 19:59 must not promote H19; tick hour is current."""
     existing = {
         "today_date": TODAY,
         "plan_from_hour": 19,
@@ -58,7 +55,6 @@ def test_write_guard_straddle_keeps_dis_hour_in_history():
             _row(20, timer="Dis 20:00-21:00 8.0kW cap35%"),
         ],
     }
-    # Incoming after merge: H19 already in history with Dis; rows from H20.
     incoming = {
         "today_date": TODAY,
         "plan_from_hour": 20,
@@ -70,24 +66,20 @@ def test_write_guard_straddle_keeps_dis_hour_in_history():
             _row(21, timer="Dis 21:00-22:00 8.0kW cap33%"),
         ],
     }
-    # Wall clock still 19:59 when write_plan runs (straddle).
     now = datetime(2026, 8, 12, 19, 59, 50, tzinfo=TZ)
     out = guard_future_quarters_on_write(incoming, existing, now=now)
     hist_hours = sorted(
         int(r["hour"]) for r in out["history_rows"]
         if str(r.get("plan_date")) == TODAY
     )
-    assert 19 in hist_hours, f"H19 dropped from history: {hist_hours}"
-    h19 = next(r for r in out["history_rows"] if int(r["hour"]) == 19)
-    assert str(h19.get("timer_schedule") or "").startswith("Dis 19:15"), (
-        f"H19 timer lost: {h19.get('timer_schedule')!r}"
-    )
-    assert int(out.get("plan_from_hour")) >= 20
-    assert all(int(r["hour"]) >= 20 or str(r.get("plan_date")) != TODAY for r in out["rows"])
+    assert 19 not in hist_hours, f"H19 promoted early: {hist_hours}"
+    h19 = next(r for r in out["rows"] if int(r["hour"]) == 19)
+    assert str(h19.get("timer_schedule") or "").startswith("Dis 19:15")
+    assert int(out.get("plan_from_hour")) == 19
 
 
-def test_write_guard_promotes_from_existing_rows_on_straddle():
-    """Even if incoming history missed H19, promote Dis from existing.rows."""
+def test_write_guard_at_hour_start_promotes_previous_from_existing_rows():
+    """At 20:00, H19 leaves live rows into history from existing.rows."""
     existing = {
         "today_date": TODAY,
         "plan_from_hour": 19,
@@ -100,11 +92,12 @@ def test_write_guard_promotes_from_existing_rows_on_straddle():
     incoming = {
         "today_date": TODAY,
         "plan_from_hour": 20,
-        "history_rows": list(existing["history_rows"]),  # no H19
+        "history_rows": list(existing["history_rows"]),
         "rows": [_row(20, timer="Dis 20:00-21:00 8.0kW cap35%")],
     }
-    now = datetime(2026, 8, 12, 19, 59, 55, tzinfo=TZ)
+    now = datetime(2026, 8, 12, 20, 0, 2, tzinfo=TZ)
     out = guard_future_quarters_on_write(incoming, existing, now=now)
     h19 = next(r for r in out["history_rows"] if int(r["hour"]) == 19)
     assert "Dis 19:15" in str(h19.get("timer_schedule") or "")
     assert h19.get("hour_labels_locked") is True
+    assert int(out.get("plan_from_hour")) == 20

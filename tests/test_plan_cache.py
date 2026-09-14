@@ -205,7 +205,6 @@ def test_hourly_refresh_mid_hour_preserves_locked_timer(monkeypatch):
     cur = next(r for r in result["rows"] if r["hour"] == 22)
     # Locked Dis kept verbatim (not Idle / not clipped / not fresh optimizer text).
     assert cur["timer_schedule"] == "Dis 22:00-22:45 8.0kW cap16%"
-    assert cur["action"] == "Discharging to Grid and Load"
     assert cur["hour_labels_locked"] is True
     # :28 — current-hour q0 not freeze-ready until :30
     assert cur["q15"][0]["from_actual"] is False

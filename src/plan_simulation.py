@@ -424,6 +424,7 @@ async def _run_fresh_simulation(
     cfg: dict,
     *,
     invalidate_inputs: bool,
+    now: datetime | None = None,
 ) -> tuple[dict[str, Any], dict, dict, dict, dict]:
     forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
         cfg, invalidate=invalidate_inputs,
@@ -435,6 +436,7 @@ async def _run_fresh_simulation(
         rules,
         cfg,
         rce_prices=rce_prices,
+        now=now,
     )
     return sim, forecast, metrics, rules, rce_prices
 
@@ -482,7 +484,7 @@ async def build_plan_simulation(
             now.strftime("%Y-%m-%d %H:%M"),
         )
         sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
-            cfg, invalidate_inputs=invalidate_inputs,
+            cfg, invalidate_inputs=invalidate_inputs, now=now,
         )
         result = _wrap_sim_result(
             sim,
@@ -493,7 +495,7 @@ async def build_plan_simulation(
             rules=rules,
         )
         if existing is not None and not plan_needs_full_rebuild(existing, now):
-            # Same day: merge so locked timer/action and from_actual q15 stay in SQLite.
+            # Same day: merge so locked timer and from_actual q15 stay in SQLite.
             result = merge_incremental_plan(
                 existing,
                 result,
@@ -551,7 +553,7 @@ async def hourly_plan_refresh(
     async with _get_plan_lock():
         existing = read_plan()
         sim, forecast, metrics, rules, rce_prices = await _run_fresh_simulation(
-            cfg, invalidate_inputs=True,
+            cfg, invalidate_inputs=True, now=now,
         )
         fresh = _wrap_sim_result(
             sim,

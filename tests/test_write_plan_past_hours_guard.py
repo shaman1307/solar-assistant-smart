@@ -106,7 +106,6 @@ def test_guard_keeps_history_and_rewrites_future_hours():
     assert cur["q15"][1]["production"] == 1.0
     assert cur["q15"][2]["production"] == 2.0
     assert cur["q15"][3]["production"] == 2.0
-    assert cur["action"] == "LIVE-14"  # locked labels kept
     assert cur["timer_schedule"].startswith("Dis 14:00")
     fut = next(r for r in guarded["rows"] if int(r["hour"]) == 15)
     assert fut["action"] == "NEW-15"
@@ -145,7 +144,7 @@ def test_write_plan_blocks_past_hour_overwrite():
     assert cur["q15"][0]["production"] == 1.0
     assert cur["q15"][1]["production"] == 1.0
     assert cur["q15"][2]["production"] == 9.0
-    assert cur["action"] == "CUR"
+    assert cur["timer_schedule"].startswith("Dis 14:00")
 
 
 def test_write_plan_does_not_overwrite_past_quarters():
@@ -209,7 +208,6 @@ def test_write_plan_does_not_overwrite_past_quarters():
     assert [s["production"] for s in hist["q15"]] == [12.0, 12.0, 12.0, 12.0]
 
     cur = next(r for r in stored["rows"] if int(r["hour"]) == 14)
-    assert cur["action"] == "LOCKED-CUR"
     assert cur["timer_schedule"].startswith("Dis 14:00")
     # Freeze-ready q0 stays as seeded.
     assert cur["q15"][0]["production"] == 1.1
@@ -275,4 +273,3 @@ def test_guard_keeps_locked_chg_while_window_open_even_if_bat_charge_thin():
     cur = next(r for r in guarded["rows"] if int(r["hour"]) == 14)
     assert str(cur.get("timer_schedule") or "").startswith("Chg 14:00-14:30")
     assert cur.get("hour_labels_locked") is True
-    assert cur.get("action") == "Charging from Grid"

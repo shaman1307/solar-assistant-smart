@@ -127,5 +127,5 @@ def test_apply_locked_mid_hour_keeps_full_past_dis():
     apply_locked_hour_labels_from_plan(fresh, existing, now, cfg=cfg)
     row = fresh["rows"][0]
     assert row["timer_schedule"] == "Dis 22:00-22:30 8.0kW cap16%"
-    assert row["action"] == ACTION_DISCHARGE_GRID
+    assert row["action"] == "Idle"
     assert row["hour_labels_locked"] is True

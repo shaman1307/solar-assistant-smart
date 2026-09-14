@@ -147,7 +147,8 @@ def test_plan_row_end_soc_from_q15():
     assert abs(plan_row_end_soc_kwh(row, 48.0) - 0.236 * 48.0) < 1e-6
 
 
-def test_committed_current_hour_row_requires_timer():
+def test_committed_current_hour_row_any_sqlite_row():
+    """Any SQLite row for the current hour is committed, including empty Timer."""
     plan = {
         "rows": [
             {
@@ -177,7 +178,9 @@ def test_committed_current_hour_row_requires_timer():
         }],
     }
     with patch("src.sqlite_store.read_plan", return_value=empty):
-        assert committed_current_hour_row("2026-07-21", 1) is None
+        row = committed_current_hour_row("2026-07-21", 1)
+    assert row is not None
+    assert not str(row.get("timer_schedule") or "").strip()
 
 
 def test_apply_locked_at_hour_start_keeps_existing_chg():
@@ -210,9 +213,9 @@ def test_apply_locked_at_hour_start_keeps_existing_chg():
     apply_locked_hour_labels_from_plan(result, existing, now)
     row = result["rows"][0]
     assert row["timer_schedule"] == "Chg 01:00-01:30 6.0kW cap25%"
-    assert row["action"] == "Charging from Grid"
     assert row["hour_labels_locked"] is True
-    assert float(row["soc"]) == 25.0
+    assert row["action"] == "Discharging to Load"
+    assert float(row["soc"]) == 19.0
 
 
 def test_apply_locked_at_hour_start_keeps_empty_timer():
@@ -244,6 +247,21 @@ def test_apply_locked_at_hour_start_keeps_empty_timer():
     row = result["rows"][0]
     assert not str(row.get("timer_schedule") or "").strip()
     assert row["hour_labels_locked"] is True
+
+
+def test_quarter_plan_refresh_cron_at_second_2():
+    from src.scheduler import create_scheduler
+
+    sched = create_scheduler({})
+    try:
+        job = sched.get_job("quarter_plan_refresh")
+        assert job is not None
+        trigger = str(job.trigger)
+        assert "second='2'" in trigger or "second=2" in trigger
+        assert "0,15,31,45" in trigger
+    finally:
+        if sched.running:
+            sched.shutdown(wait=False)
 
 
 def test_run_day_from_next_hour_with_skip_zero_uses_seed_soc():

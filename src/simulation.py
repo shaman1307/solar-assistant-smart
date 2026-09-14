@@ -241,18 +241,12 @@ def committed_current_hour_row(
     today_str: str,
     plan_from_hour: int,
 ) -> dict[str, Any] | None:
-    """SQLite current-hour row with a non-empty Timer Schedule (must not be rewritten).
+    """SQLite row for today's current hour (empty or Chg/Dis Timer).
 
-    When H01 was planned as future Chg and the clock hits 01:00, that row is already
-    the committed current hour — optimizer must keep it and seed later hours from
-    its end-of-hour SOC.
+    Receding horizon: the current-hour timer is already committed; DP starts at H+1
+    and seeds from this row's end-of-hour SOC.
     """
-    row = _sqlite_current_hour_row(today_str, plan_from_hour)
-    if row is None:
-        return None
-    if str(row.get("timer_schedule") or "").strip():
-        return row
-    return None
+    return _sqlite_current_hour_row(today_str, plan_from_hour)
 
 
 def _locked_current_hour_end_soc_kwh(
@@ -314,11 +308,11 @@ def apply_locked_hour_labels_from_plan(
     now: datetime,
     cfg: dict | None = None,
 ) -> None:
-    """After any rebuild: keep the SQLite timer for the current hour.
+    """Keep the SQLite Timer Schedule for the current hour (empty, Chg, or Dis).
 
-    At :00 lock whatever SQLite already has for this hour (empty, Chg, or Dis).
-    Do not adopt a fresh optimizer timer. Mid-hour: keep locked SQLite labels.
+    Action, q15, meters, and Energy Cost stay on the fresh row.
     """
+    del cfg
     today_str = now.strftime("%Y-%m-%d")
     hour = now.hour
 
@@ -334,49 +328,22 @@ def apply_locked_hour_labels_from_plan(
             None,
         )
 
-    if now.minute == 0:
-        for row in result.get("rows") or []:
-            if row.get("start") == "TOTAL":
-                continue
-            if str(row.get("plan_date") or "") != today_str or int(row.get("hour", -1)) != hour:
-                continue
-            if row.get("timer_schedule_manual"):
-                row["hour_labels_locked"] = True
-                break
-            if existing_row is not None:
-                for key, val in existing_row.items():
-                    row[key] = copy.deepcopy(val)
-            else:
-                row["timer_schedule"] = ""
-            row["hour_labels_locked"] = True
-            break
-        return
-
     for row in result.get("rows") or []:
         if row.get("start") == "TOTAL":
             continue
         if str(row.get("plan_date") or "") != today_str or int(row.get("hour", -1)) != hour:
             continue
-        if (
-            existing_row is not None
-            and existing_row.get("hour_labels_locked")
-            and not row.get("timer_schedule_manual")
-        ):
-            row["timer_schedule"] = existing_row.get("timer_schedule", "")
-            row["action"] = existing_row.get("action", "")
+        if row.get("timer_schedule_manual"):
             row["hour_labels_locked"] = True
-            # Keep frozen q15 slots from SQLite (from_actual) on full rebuild.
-            existing_q15 = list(existing_row.get("q15") or [])
-            if existing_q15:
-                row["q15"] = copy.deepcopy(existing_q15)
-                for key in (
-                    "production", "consumption", "battery", "bat_charge",
-                    "bat_discharge", "grid_import", "grid_export", "soc",
-                    "import_cost", "export_revenue", "energy_cost", "service_cost",
-                    "cost",
-                ):
-                    if key in existing_row:
-                        row[key] = copy.deepcopy(existing_row[key])
+            break
+        if existing_row is not None:
+            row["timer_schedule"] = existing_row.get("timer_schedule", "")
+            if existing_row.get("timer_schedule_manual"):
+                row["timer_schedule_manual"] = True
+            row["hour_labels_locked"] = True
+        elif now.minute == 0:
+            row["timer_schedule"] = ""
+            row["hour_labels_locked"] = True
         break
 
 
@@ -386,6 +353,7 @@ def build_energy_arbitrage_plan(
     rules: dict[str, Any],
     cfg: dict,
     rce_prices: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     params = get_simulation_params(cfg)
     battery_cap = float(cfg["battery"]["capacity_kwh"])
@@ -399,7 +367,7 @@ def build_energy_arbitrage_plan(
     pv_forecast_today = forecast["today"].get("pv_forecast") or pv_today
     load_forecast_today = forecast["today"].get("load_forecast") or load_today
 
-    now = _now_warsaw()
+    now = now or _now_warsaw()
     start_dt = now.replace(minute=0, second=0, microsecond=0)
     today_date = start_dt.date()
     today_str = start_dt.strftime("%Y-%m-%d")
@@ -464,16 +432,6 @@ def build_energy_arbitrage_plan(
 
     rce_today = quarters_by_date.get(today_str) or []
     committed_hour = committed_current_hour_row(today_str, plan_from_hour)
-    # Current-hour timer is frozen (empty, Chg, or Dis). Plan from H+1.
-    if committed_hour is None:
-        committed_hour = _sqlite_current_hour_row(today_str, plan_from_hour)
-        if committed_hour is None and battery_cap > 0:
-            committed_hour = {
-                "hour": plan_from_hour,
-                "timer_schedule": "",
-                "action": "Discharging to Load",
-                "soc": round((float(soc_kwh) / battery_cap) * 100.0, 1),
-            }
     committed_end_soc = (
         plan_row_end_soc_kwh(committed_hour, battery_cap)
         if committed_hour is not None
@@ -689,10 +647,11 @@ def run_simulation(
     rules: dict[str, Any],
     cfg: dict,
     rce_prices: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Rolling energy arbitrage plan (same core as Rules / Debug smart today)."""
     return build_energy_arbitrage_plan(
-        forecast, live_metrics, rules, cfg, rce_prices=rce_prices,
+        forecast, live_metrics, rules, cfg, rce_prices=rce_prices, now=now,
     )
 
 

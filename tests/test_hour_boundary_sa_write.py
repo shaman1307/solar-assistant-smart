@@ -107,6 +107,10 @@ def test_sync_timer_reads_timer_from_sqlite_rows():
     with (
         patch.object(hbs, "now_warsaw", return_value=now),
         patch.object(hbs.sa_client, "get_rules", get_rules_mock),
+        patch.object(
+            hbs.sa_client, "get_live_metrics",
+            AsyncMock(return_value={"battery_soc": 16.0}),
+        ),
         patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", apply_mock),
     ):
         status = asyncio.run(hbs._sync_timer_from_hour_row(cfg, rows, 8))
@@ -186,6 +190,10 @@ def test_sync_timer_writes_plan_start_without_shift():
     with (
         patch.object(hbs, "now_warsaw", return_value=now),
         patch.object(hbs.sa_client, "get_rules", AsyncMock(return_value=sa_rules)),
+        patch.object(
+            hbs.sa_client, "get_live_metrics",
+            AsyncMock(return_value={"battery_soc": 16.0}),
+        ),
         patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", apply_mock),
     ):
         status = asyncio.run(hbs._sync_timer_from_hour_row(_cfg(), rows, 2))
@@ -226,6 +234,10 @@ def test_mid_quarter_limit_home_retries_active_charge_write():
         patch.object(hbs, "now_warsaw", return_value=now),
         patch.object(hbs, "load_config", return_value=_cfg()),
         patch.object(hbs.sa_client, "get_rules", get_rules),
+        patch.object(
+            hbs.sa_client, "get_live_metrics",
+            AsyncMock(return_value={"battery_soc": 16.0}),
+        ),
         patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", apply_mock),
         patch.object(hbs, "run_work_mode_hour_start", new_callable=AsyncMock) as wm_start,
         patch.object(hbs, "run_work_mode_limit_home", new_callable=AsyncMock) as wm_limit,
@@ -296,3 +308,29 @@ def test_mid_quarter_charge_end_clears_timed_charge_only():
     assert kwargs.get("timed_charge_enabled") is False
     # Preserve discharge flag as currently read from SA (do not force both off).
     assert kwargs.get("timed_discharge_enabled") is False
+
+
+def test_hour_boundary_start_uses_passed_tick_hour():
+    """SA hour comes from the job tick, not a later wall-clock now_warsaw()."""
+    write_plan(_plan_with_timer(10, "Dis 10:00-10:45 8.0kW cap16%"))
+    wall = datetime(2026, 7, 7, 11, 0, 5, tzinfo=ZoneInfo("Europe/Warsaw"))
+    tick = datetime(2026, 7, 7, 10, 0, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
+    wm = AsyncMock(return_value={
+        "ok": True, "on_grid_trigger_this_slot": True, "skipped": False,
+    })
+    sync = AsyncMock(return_value={"ok": True, "skipped": False})
+    lim = AsyncMock(return_value={
+        "ok": True, "skipped": True, "limit_due": False,
+    })
+    with (
+        patch.object(hbs, "now_warsaw", return_value=wall),
+        patch.object(hbs, "load_config", return_value=_cfg()),
+        patch.object(hbs, "run_work_mode_hour_start", wm),
+        patch.object(hbs, "run_work_mode_limit_home", lim),
+        patch.object(hbs, "_sync_timer_from_hour_row", sync),
+    ):
+        status = asyncio.run(hbs.run_hour_boundary_start(now=tick))
+    assert status["hour"] == 10
+    sync.assert_awaited_once()
+    assert sync.call_args.args[2] == 10
+    assert wm.await_args.kwargs.get("now") == tick

@@ -84,7 +84,7 @@ def test_splice_at_22_44_rewrites_from_22_45():
 
     assert out["history_rows"][0]["action"] == "OLD-H20"
     cur = next(r for r in out["rows"] if r["hour"] == 22 and r["plan_date"] == TODAY)
-    assert cur["action"] == "OLD-22"  # locked labels kept
+    assert cur["timer_schedule"] == "KEEP 22"
     assert cur["q15"][0]["production"] == 1.0
     assert cur["q15"][1]["production"] == 1.0
     assert cur["q15"][2]["production"] == 1.0  # in-progress 22:30-45 kept
