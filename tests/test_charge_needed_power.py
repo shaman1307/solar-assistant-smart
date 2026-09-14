@@ -235,3 +235,40 @@ def test_prepeak_budget_covers_overnight_drain_to_peak_target():
     assert all(out[h].grid_charge_kw < 0.05 for h in range(1, 5))
     assert out[5].grid_charge_kw > 0.05
     assert abs(out[5].grid_charge_kw - 2.4) < 0.05
+
+
+def test_prepeak_pack_skips_leading_peak_then_fills_before_next_peak():
+    """Horizon starts in evening peak; DP Chg in the first offpeak moves to the last hour before the next peak."""
+    min_kwh = 7.68
+    n = 8
+    controls = [HourControl(0.0, 0.0, False) for _ in range(n)]
+    controls[2] = HourControl(3.0, 0.0, False)
+    buy = [PEAK, PEAK, OFF, OFF, OFF, OFF, OFF, PEAK]
+    out = plan_battery_grid_charge(
+        controls,
+        pv_series=[0.0] * n,
+        load_series=[0.1] * n,
+        buy_prices=buy,
+        offpeak_buy=OFF,
+        charge_targets=[0.0] * n,
+        initial_soc_kwh=min_kwh + 8.0,
+        battery_cap=48.0,
+        min_kwh=min_kwh,
+        charge_ac_step=6.0,
+        discharge_dc_step=8.0,
+        inverter_ac_step=8.0,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        eps_step=0.01,
+        reserves=[min_kwh] * n,
+        step_scale=1.0,
+        skip_leading_slots=0,
+        min_block_minutes=30,
+        min_hourly_kwh=0.5,
+    )
+    assert all(out[i].grid_charge_kw < 0.05 for i in (0, 1, 2, 7))
+    assert out[6].grid_charge_kw > 2.9
+

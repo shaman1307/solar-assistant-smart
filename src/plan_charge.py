@@ -108,12 +108,21 @@ def plan_battery_grid_charge(
     if min_block_minutes is None:
         min_block_minutes = 30
 
+    # Next peak after the current peak block so an evening-peak start still
+    # packs Chg in the last offpeak hour before the following morning peak.
+    scan_from = fill_from_step
+    while scan_from < len(controls):
+        buy_p = float(
+            buy_prices[scan_from] if scan_from < len(buy_prices) else offpeak_buy
+        )
+        if buy_p > offpeak_buy + eps_step:
+            scan_from += 1
+            continue
+        break
     first_peak = len(controls)
     peak_buy = float(offpeak_buy)
-    for i, p in enumerate(buy_prices):
-        if i >= len(controls):
-            break
-        price = float(p)
+    for i in range(scan_from, len(controls)):
+        price = float(buy_prices[i] if i < len(buy_prices) else offpeak_buy)
         if price > offpeak_buy + eps_step:
             first_peak = i
             peak_buy = price
