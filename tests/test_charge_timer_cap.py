@@ -120,7 +120,18 @@ def test_cap_pct_fallback_last_slot_when_no_charge_energy():
         _q(18.0, action=ACTION_CHARGE_GRID),
         _q(21.6, action=ACTION_CHARGE_GRID),
     ]
-    assert _charge_timer_cap_pct(slots, _cfg()) == 22
+    # End 21.6→22; start 18 + 5 headroom → 23.
+    assert _charge_timer_cap_pct(slots, _cfg()) == 23
+
+
+def test_cap_pct_at_least_five_above_window_start():
+    """SRNE does not start timed charge when stop % is only ~1 point above live SOC."""
+    slots = [
+        _q(17.4, battery_delta=0.33, grid_import=0.4),
+        _q(18.1, battery_delta=0.33, grid_import=0.4),
+    ]
+    assert _charge_timer_cap_pct(slots, _cfg()) == 21
+    assert _charge_timer_cap_pct(slots, _cfg(), live_soc_pct=17.0) == 22
 
 
 # --- build_hour_timer_schedule integration ---

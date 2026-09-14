@@ -32,8 +32,14 @@ async def api_rules(fresh: bool = False) -> dict[str, Any]:
 async def api_set_grid_charge(body: dict) -> dict[str, Any]:
     cfg = load_config()
     enabled: bool = bool(body.get("enabled", False))
-    power_kw: float = float(body.get("power_kw", 2.0))
-    ok = await sa_client.set_grid_charging(cfg, enabled=enabled, power_kw=power_kw)
+    power_kw: float = float(body.get("power_kw") or 0.0)
+    current_raw = body.get("current_a")
+    current_a: int | None = None
+    if current_raw is not None and str(current_raw).strip() != "":
+        current_a = int(float(current_raw))
+    ok = await sa_client.set_grid_charging(
+        cfg, enabled=enabled, power_kw=power_kw, current_a=current_a,
+    )
     return {"ok": ok}
 
 
@@ -149,11 +155,18 @@ async def api_apply_plan() -> dict[str, Any]:
             "planned_action": None,
         }
     rules = await sa_client.get_rules(cfg)
+    metrics = await sa_client.get_live_metrics(cfg)
+    live_soc = metrics.get("battery_soc")
+    try:
+        live_soc_pct = float(live_soc) if live_soc is not None else None
+    except (TypeError, ValueError):
+        live_soc_pct = None
     schedule = build_sa_schedule_from_hour_row(
         rows,
         hour,
         cfg,
         existing=rules,
+        live_soc_pct=live_soc_pct,
     )
     if not schedule:
         return {

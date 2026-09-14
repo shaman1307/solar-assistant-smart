@@ -47,6 +47,9 @@ _SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS = (
     "Battery first",
     "Grid first",
 )
+_GRID_VOLTAGE_TOPICS = tuple(
+    f"{_INVERTER_PREFIX}/grid_voltage_{n}" for n in (1, 2, 3)
+)
 WORK_MODE_ON_GRID = "On-grid"
 WORK_MODE_LIMIT_HOME_LOAD = "Limit power to home load"
 BATTERY_DISCHARGE_MODE_GRID_EXPORT = "Grid export enabled"
@@ -164,6 +167,9 @@ def _empty_rules() -> dict[str, Any]:
         "battery_discharge_mode_options": list(_BATTERY_DISCHARGE_MODE_DEFAULT_OPTIONS),
         "solar_power_priority": None,
         "solar_power_priority_options": list(_SOLAR_POWER_PRIORITY_DEFAULT_OPTIONS),
+        "grid_voltage_1": None,
+        "grid_voltage_2": None,
+        "grid_voltage_3": None,
         "sa_online": False,
     }
 
@@ -400,6 +406,12 @@ async def get_rules(cfg: dict, *, fresh: bool = False) -> dict[str, Any]:
             spp_topic = _solar_power_priority_topic(cfg)
             spp_raw = by_topic.get(spp_topic)
             solar_power_priority = str(spp_raw).strip() if spp_raw is not None else None
+            grid_voltages: dict[str, float | None] = {}
+            for n, topic in enumerate(_GRID_VOLTAGE_TOPICS, start=1):
+                raw = by_topic.get(topic)
+                grid_voltages[f"grid_voltage_{n}"] = (
+                    round(_float(raw), 1) if raw is not None else None
+                )
             result = {
                 "grid_charge_enabled": _truthy(by_topic.get(settings["grid_charge_switch"])),
                 "grid_export_enabled": _truthy(by_topic.get(settings["grid_export_switch"])),
@@ -414,6 +426,7 @@ async def get_rules(cfg: dict, *, fresh: bool = False) -> dict[str, Any]:
                 "battery_discharge_mode_options": _battery_discharge_mode_options(cfg),
                 "solar_power_priority": solar_power_priority,
                 "solar_power_priority_options": _solar_power_priority_options(cfg),
+                **grid_voltages,
                 "sa_online": True,
             }
             _rules_cache = result
@@ -563,8 +576,8 @@ def _build_schedule_writes(
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
     # Policy: Grid charge Enabled only while Timed charge is active; else Disabled.
-    # Do NOT write max_grid_charge_current here — power is charge_power_slot only;
-    # writing current (e.g. 125 A from 6 kW/48 V) 422-rejects the whole batch.
+    # Slot power is ignored when max_grid_charge_current is stale (e.g. 34 A from
+    # a 2 kW UI toggle). Write amps from slot kW, capped at 100 A so SA does not 422.
     if settings is not None and schedule.get("timed_charge_enabled") is not None:
         writes.append(
             (
@@ -572,6 +585,22 @@ def _build_schedule_writes(
                 _grid_charge_switch(bool(schedule["timed_charge_enabled"])),
             )
         )
+        if schedule.get("timed_charge_enabled"):
+            slot_kw = max(
+                (
+                    float(s.get("power_kw") or 0)
+                    for s in schedule.get("charge_slots") or []
+                    if int(s.get("slot") or 0) in charge_slot_nums
+                ),
+                default=0.0,
+            )
+            if slot_kw > 0 and settings.get("charge_current_limit"):
+                writes.append(
+                    (
+                        settings["charge_current_limit"],
+                        str(_grid_charge_current_a(slot_kw)),
+                    )
+                )
     if schedule.get("timed_charge_enabled") is not None:
         writes.append((f"{p}/timed_charge", _sa_switch(bool(schedule["timed_charge_enabled"]))))
     if schedule.get("timed_discharge_enabled") is not None:
@@ -614,6 +643,7 @@ async def set_grid_charging(
     *,
     enabled: bool,
     power_kw: float = 0.0,
+    current_a: int | None = None,
     verify: bool = True,
     verify_timeout_s: float = GRID_CHARGE_VERIFY_TIMEOUT_S,
 ) -> bool:
@@ -622,13 +652,21 @@ async def set_grid_charging(
     topic = settings["grid_charge_switch"]
     target = _grid_charge_switch(enabled)
     writes: list[tuple[str, str]] = [(topic, target)]
-    if enabled and power_kw > 0:
-        writes.append(
-            (settings["charge_current_limit"], str(_grid_charge_current_a(power_kw))),
-        )
+    amps: int | None = None
+    if current_a is not None:
+        amps = max(1, min(_MAX_GRID_CHARGE_CURRENT_A, int(current_a)))
+    elif enabled and power_kw > 0:
+        amps = _grid_charge_current_a(power_kw)
+    if amps is not None and settings.get("charge_current_limit"):
+        writes.append((settings["charge_current_limit"], str(amps)))
     try:
         await _write_metrics(cfg, writes, lock_wait_s=90.0)
-        log.info("Grid charging %s (%.1f kW)", "ON" if enabled else "OFF", power_kw)
+        log.info(
+            "Grid charging %s (%.1f kW, %s A)",
+            "ON" if enabled else "OFF",
+            power_kw,
+            amps if amps is not None else "—",
+        )
         if not verify:
             invalidate_rules_cache()
             return True

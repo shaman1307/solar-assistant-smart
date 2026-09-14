@@ -59,3 +59,27 @@ def test_sa_schedule_matches_when_sa_matches_plan():
         "charge_slots": [{"slot": 1, "from": "00:00", "to": "00:00", "power_kw": 0}],
     }
     assert sa_schedule_matches_plan_row(rows, 8, cfg, rules) is True
+
+
+def test_sa_charge_cap_at_least_five_above_live_soc():
+    rows = [{
+        "hour": 22,
+        "start": "13-09-2026 23:00",
+        "action": "Charging from Grid",
+        "timer_schedule": "Chg 22:00-22:30 4.0kW cap18%",
+    }]
+    rules = {
+        "timed_charge_enabled": True,
+        "timed_discharge_enabled": False,
+        "charge_slots": [{
+            "slot": 1, "from": "22:00", "to": "22:30",
+            "capacity_pct": 18, "power_kw": 4.0, "voltage_v": 56.0,
+        }],
+        "discharge_slots": [{"slot": 1, "from": "00:00", "to": "00:00", "power_kw": 0}],
+    }
+    expected = build_sa_schedule_from_hour_row(
+        rows, 22, _cfg(), existing=rules, live_soc_pct=17.0,
+    )
+    assert expected is not None
+    assert expected["charge_slots"][0]["capacity_pct"] == 22
+

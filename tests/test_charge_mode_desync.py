@@ -69,8 +69,7 @@ def test_charge_schedule_writes_skip_unsupported_srne_registers():
     assert "inverter_1/charge_using_grid_slot_1" not in topics
     assert "inverter_1/charge_using_generator_slot_1" not in topics
     assert ("inverter_1/charge_power_slot_1", "6000") in writes
-    # Timer sync must not touch max_grid_charge_current (power slot is enough).
-    assert "inverter_1/charge_current" not in topics
+    assert ("inverter_1/charge_current", "100") in writes
     assert _grid_charge_current_a(6.0) == 100
     assert _grid_charge_current_a(4.0) == 68  # 4000 / 58
 

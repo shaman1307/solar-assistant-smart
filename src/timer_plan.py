@@ -35,6 +35,8 @@ ACTION_IDLE_PV = "Idle - PV to Load. On-Grid"
 ACTION_TIE_PV = "PV to Load. On-Grid"
 ACTION_TIE_GRID = "Grid Usage for Load"
 ACTION_CHARGE_GRID = "Charging from Grid"
+# SRNE timed charge does not start unless stop % is clearly above live SOC.
+CHARGE_CAP_MIN_HEADROOM_PCT = 5
 ACTION_CHARGE_SOLAR = "Charging from PV"
 ACTION_DISCHARGE_LOAD = "Discharging to Load"
 ACTION_DISCHARGE_GRID = "Discharging to Grid and Load"
@@ -334,19 +336,36 @@ def _round_pct_half_up(value: float) -> int:
     return int(math.ceil(x - 0.5))
 
 
-def _charge_timer_cap_pct(slots: list[dict[str, Any]], cfg: dict) -> int:
-    """SA charge stop %: SOC at end of this hour's charge window (math round).
+def _charge_timer_cap_pct(
+    slots: list[dict[str, Any]],
+    cfg: dict,
+    *,
+    live_soc_pct: float | None = None,
+) -> int:
+    """SA charge stop %: end of this hour's charge window, at least live SOC+5.
 
     Not hour-end SOC after post-charge discharge, and not overnight reserve.
     Example: Chg 01:00-01:30 peaks at 24.5%, then load drains to 23.6% by 02:00 —
     cap must be 25% (round 24.5), else SA would stop at 24% and end ~23.1%.
+    SRNE does not start timed charge when stop % is only 1–2 points above live SOC.
     """
     min_soc = int(plan_min_soc_pct(cfg))
-    if not slots:
-        return min_soc
-
+    cap = min_soc
     eps = 0.001
     last_charge_soc: float | None = None
+    start_soc: float | None = None
+    if live_soc_pct is not None:
+        try:
+            start_soc = float(live_soc_pct)
+        except (TypeError, ValueError):
+            start_soc = None
+
+    bat_cap = 0.0
+    try:
+        bat_cap = float((cfg.get("battery") or {}).get("capacity_kwh") or 0)
+    except (TypeError, ValueError):
+        bat_cap = 0.0
+
     for s in slots:
         charged = _slot_bat_charge_kwh(s)
         grid_chg = float(s.get("grid_import") or 0)
@@ -360,26 +379,35 @@ def _charge_timer_cap_pct(slots: list[dict[str, Any]], cfg: dict) -> int:
         if soc is None:
             continue
         try:
-            last_charge_soc = float(soc)
+            soc_f = float(soc)
         except (TypeError, ValueError):
             continue
+        last_charge_soc = soc_f
+        if start_soc is None:
+            start_soc = soc_f
+            if bat_cap > 0:
+                start_soc -= 100.0 * charged / bat_cap
 
     if last_charge_soc is not None:
-        return min(100, max(min_soc, _round_pct_half_up(last_charge_soc)))
+        cap = min(100, max(min_soc, _round_pct_half_up(last_charge_soc)))
+    else:
+        last_soc: float | None = None
+        for s in slots:
+            soc = s.get("soc_pct")
+            if soc is None:
+                continue
+            try:
+                last_soc = float(soc)
+            except (TypeError, ValueError):
+                continue
+        if last_soc is not None:
+            cap = min(100, max(min_soc, _round_pct_half_up(last_soc)))
+            if start_soc is None:
+                start_soc = last_soc
 
-    # Fallback: last slot SOC in the hour.
-    last_soc: float | None = None
-    for s in slots:
-        soc = s.get("soc_pct")
-        if soc is None:
-            continue
-        try:
-            last_soc = float(soc)
-        except (TypeError, ValueError):
-            continue
-    if last_soc is not None:
-        return min(100, max(min_soc, _round_pct_half_up(last_soc)))
-    return min_soc
+    if start_soc is not None:
+        cap = max(cap, min(100, int(start_soc) + CHARGE_CAP_MIN_HEADROOM_PCT))
+    return min(100, max(min_soc, cap))
 
 
 def _slot_bat_charge_kwh(slot: dict[str, Any]) -> float:
@@ -1310,6 +1338,7 @@ def build_sa_schedule_from_hour_row(
     hour: int,
     cfg: dict,
     existing: dict[str, Any] | None = None,
+    live_soc_pct: float | None = None,
 ) -> dict[str, Any] | None:
     """SA write payload from one Energy arbitrage hour row (Timer Schedule column)."""
     row = next(
@@ -1338,11 +1367,20 @@ def build_sa_schedule_from_hour_row(
         if seg["kind"] == "chg":
             timed_charge = True
             tpl = charge_slots[0]
+            cap = int(seg["capacity_pct"])
+            if live_soc_pct is not None:
+                try:
+                    cap = max(
+                        cap,
+                        min(100, int(float(live_soc_pct)) + CHARGE_CAP_MIN_HEADROOM_PCT),
+                    )
+                except (TypeError, ValueError):
+                    pass
             charge_slots[0] = {
                 "slot": 1,
                 "from": seg["from"],
                 "to": seg["to"],
-                "capacity_pct": seg["capacity_pct"],
+                "capacity_pct": cap,
                 "voltage_v": float(tpl.get("voltage_v", 58.0)),
                 "power_kw": round(min(float(seg["power_kw"]), charge_cap), 2),
                 "grid": True,

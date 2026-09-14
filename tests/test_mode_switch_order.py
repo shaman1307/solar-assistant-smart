@@ -325,6 +325,7 @@ def test_start_boundary_export_modes_before_timer_write():
         patch.object(hbs, "load_config", return_value=_cfg()),
         patch.object(hbs, "now_warsaw", return_value=now),
         patch.object(hbs.sa_client, "get_rules", side_effect=get_rules),
+        patch.object(hbs.sa_client, "get_live_metrics", side_effect=get_metrics),
         patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", side_effect=apply_schedule),
         patch("src.work_mode_scheduler.load_config", return_value=_cfg()),
         patch("src.work_mode_scheduler.now_warsaw", return_value=now),

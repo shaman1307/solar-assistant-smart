@@ -815,16 +815,35 @@
     .timer-power-field .timer-slot-apply-btn {
       flex: 0 0 auto;
     }
+    .timer-power-group[data-group="grid-current"] .timer-slot-apply-btn {
+      min-width: 3.75rem;
+      text-align: center;
+    }
+    #grid-voltage-1,
+    #grid-voltage-2,
+    #grid-voltage-3 {
+      flex: 1 1 0;
+      width: auto;
+      min-width: 0;
+      text-align: center;
+      padding-left: 0.2rem;
+      padding-right: 0.2rem;
+    }
     @media (min-width: 768px) {
       .timer-power-controls {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         column-gap: 1rem;
         row-gap: 0.75rem;
         align-items: start;
       }
       .timer-power-label {
         font-size: 0.875rem;
+      }
+    }
+    @media (min-width: 1280px) {
+      .timer-power-controls {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
       }
     }
     .timer-schedule-grid {
@@ -2975,6 +2994,32 @@
             </div>
           </div>
         </div>
+        <div class="timer-power-group" data-group="grid-current">
+          <div class="timer-power-row">
+            <span class="timer-power-label">Max grid charge current</span>
+            <div class="timer-power-field">
+              <input id="grid-charge-current-input" class="timer-power-select" type="number"
+                min="1" max="100" step="1" inputmode="numeric" aria-label="Max grid charge current (A)"
+                title="SA max_grid_charge_current (A). Slot power is ignored if this is lower.">
+              <button type="button" id="grid-charge-current-apply" onclick="applyGridChargeCurrent()"
+                class="timer-slot-apply-btn shrink-0">Apply</button>
+            </div>
+          </div>
+          <div class="timer-power-row">
+            <span class="timer-power-label">Grid voltage</span>
+            <div class="timer-power-field">
+              <input id="grid-voltage-1" class="timer-power-select" type="text" readonly
+                tabindex="-1" aria-label="Grid voltage 1">
+              <input id="grid-voltage-2" class="timer-power-select" type="text" readonly
+                tabindex="-1" aria-label="Grid voltage 2">
+              <input id="grid-voltage-3" class="timer-power-select" type="text" readonly
+                tabindex="-1" aria-label="Grid voltage 3">
+              <button type="button" id="grid-voltage-refresh" class="timer-slot-apply-btn shrink-0"
+                aria-label="Refresh grid voltage"
+                onclick="const b=this; setApplyButtonBusy(b,true); refreshTimerFromSA({force:true,silent:false}).finally(()=>setApplyButtonBusy(b,false))">Refresh</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="timer-schedule-grid">
 
@@ -4295,6 +4340,9 @@ function persistRulesUiCache() {
       battery_discharge_mode_options: rulesData.battery_discharge_mode_options,
       solar_power_priority: rulesData.solar_power_priority,
       solar_power_priority_options: rulesData.solar_power_priority_options,
+      grid_voltage_1: rulesData.grid_voltage_1,
+      grid_voltage_2: rulesData.grid_voltage_2,
+      grid_voltage_3: rulesData.grid_voltage_3,
       timed_charge_enabled: rulesData.timed_charge_enabled,
       timed_discharge_enabled: rulesData.timed_discharge_enabled,
       charge_slots: rulesData.charge_slots,
@@ -7862,9 +7910,20 @@ function renderGridChargeSelect(r) {
   if (!el) return;
   if (rulesGridChargeTrusted(r)) {
     setTimedPowerSelect('grid-charge-select', r.grid_charge_enabled);
-    return;
+  } else if (!timedPowerSelectHasValue(el)) {
+    setTimedPowerSelect('grid-charge-select', null);
   }
-  if (!timedPowerSelectHasValue(el)) setTimedPowerSelect('grid-charge-select', null);
+  const cur = document.getElementById('grid-charge-current-input');
+  if (cur && document.activeElement !== cur) {
+    const a = Number(r.charge_current_a);
+    cur.value = Number.isFinite(a) && a > 0 ? String(Math.round(a)) : '';
+  }
+  for (let n = 1; n <= 3; n++) {
+    const voltEl = document.getElementById(`grid-voltage-${n}`);
+    if (!voltEl) continue;
+    const v = Number(r[`grid_voltage_${n}`]);
+    voltEl.value = Number.isFinite(v) ? `${v.toFixed(1)} V` : '';
+  }
 }
 
 function renderRules(r) {
@@ -8113,10 +8172,13 @@ async function applyGridCharge() {
   const btn = document.getElementById('grid-charge-apply');
   setApplyButtonBusy(btn, true);
   try {
+    const body = { enabled };
+    const amps = parseInt(document.getElementById('grid-charge-current-input')?.value, 10);
+    if (Number.isFinite(amps) && amps > 0) body.current_a = amps;
     const res = await fetch('api/rules/grid-charge', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       alert(`Apply failed (HTTP ${res.status}). Try again in a few seconds.`);
@@ -8126,6 +8188,7 @@ async function applyGridCharge() {
     if (data.ok) {
       if (!rulesData) rulesData = {};
       rulesData.grid_charge_enabled = enabled;
+      if (body.current_a != null) rulesData.charge_current_a = body.current_a;
       setTimedPowerSelect('grid-charge-select', enabled);
       rulesData.sa_online = true;
       delete rulesData.stale;
@@ -8134,6 +8197,50 @@ async function applyGridCharge() {
       persistRulesUiCache();
     } else {
       alert('Failed to write Grid charge to SA. Retry in ~30–90s.');
+    }
+  } catch (e) {
+    alert('Failed to apply — network or timeout. Wait ~30–90s and retry.');
+  } finally {
+    setApplyButtonBusy(btn, false);
+  }
+}
+
+async function applyGridChargeCurrent() {
+  const input = document.getElementById('grid-charge-current-input');
+  const amps = parseInt(input?.value, 10);
+  if (!Number.isFinite(amps) || amps < 1) {
+    alert('Enter max grid charge current in amps (1–100).');
+    return;
+  }
+  const sel = document.getElementById('grid-charge-select');
+  const enabled = sel && sel.value !== ''
+    ? sel.value === 'true'
+    : !!(rulesData && rulesData.grid_charge_enabled);
+  const btn = document.getElementById('grid-charge-current-apply');
+  setApplyButtonBusy(btn, true);
+  try {
+    const res = await fetch('api/rules/grid-charge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled, current_a: Math.min(100, amps) }),
+    });
+    if (!res.ok) {
+      alert(`Apply failed (HTTP ${res.status}). Try again in a few seconds.`);
+      return;
+    }
+    const data = await res.json();
+    if (data.ok) {
+      if (!rulesData) rulesData = {};
+      rulesData.grid_charge_enabled = enabled;
+      rulesData.charge_current_a = Math.min(100, amps);
+      setTimedPowerSelect('grid-charge-select', enabled);
+      rulesData.sa_online = true;
+      delete rulesData.stale;
+      markSaRulesWrite();
+      clearRulesManualEdit();
+      persistRulesUiCache();
+    } else {
+      alert('Failed to write max grid charge current to SA. Retry in ~30–90s.');
     }
   } catch (e) {
     alert('Failed to apply — network or timeout. Wait ~30–90s and retry.');

@@ -170,7 +170,15 @@ async def _sync_timer_from_hour_row(
 
     # Write the plan timer as-is — never shift start times.
     rules = await sa_client.get_rules(cfg)
-    schedule = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
+    metrics = await sa_client.get_live_metrics(cfg)
+    live_soc = metrics.get("battery_soc")
+    try:
+        live_soc_pct = float(live_soc) if live_soc is not None else None
+    except (TypeError, ValueError):
+        live_soc_pct = None
+    schedule = build_sa_schedule_from_hour_row(
+        rows, hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
+    )
     if not schedule:
         status["skipped"] = True
         status["skip_reason"] = "unparsed_timer_schedule"
