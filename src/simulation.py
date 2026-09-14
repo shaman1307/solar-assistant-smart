@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .g12_pricing import get_buy_price
+from .grid_config import export_window_start_hour
 from .plan_cost import compute_plan_totals
 from .plan_q15 import (
     collect_q15_schedule_rows,
@@ -36,7 +37,9 @@ from .plan_orchestrator import (
 )
 from .plan_optimizer import (
     battery_export_break_even_rce,
+    evening_export_window_hours,
     g12_tariff_from_cfg,
+    morning_cover_bound_from_hour_buys,
 )
 from .rce import quarter_rce_for_dates
 from .plan_timer_override import (
@@ -447,6 +450,36 @@ def build_energy_arbitrage_plan(
         rce_tomorrow_list if len(rce_tomorrow_list) >= Q15_PER_HOUR * 24 else None
     )
 
+    tariff = g12_tariff_from_cfg(cfg)
+    g12_cover = morning_cover_bound_from_hour_buys(
+        offpeak_buy=tariff.offpeak_full,
+        epsilon=epsilon,
+        cfg=cfg,
+        today_date=today_date,
+    )
+    export_window_hours = evening_export_window_hours(
+        list(range(48)),
+        pv_series=[],
+        load_series=[],
+        rce_step_offset=0,
+        slots=Q15_PER_HOUR,
+        steps=0,
+        eta_pv_load=float(params["eta_pv_load"]),
+        epsilon=epsilon,
+        export_window_start_hour=export_window_start_hour(cfg),
+        forecast={
+            "today": {"pv": list(pv_merged), "load": list(load_merged)},
+            "tomorrow": {
+                "pv": [float(v) for v in pv_tomorrow],
+                "load": [float(v) for v in load_tomorrow],
+            },
+        },
+        cover_bound=g12_cover,
+        cfg=cfg,
+        today_date=today_date,
+    )
+    skip_export_hours = set(range(48)) - export_window_hours
+
     smart_today, smart_tomorrow = run_horizon_smart_plans(
         today_str=today_str,
         tomorrow_str=tomorrow_str,
@@ -465,6 +498,7 @@ def build_energy_arbitrage_plan(
         soc_kwh=soc_kwh,
         day_start_soc=day_start_soc,
         epsilon=epsilon,
+        skip_export_hours=skip_export_hours,
     )
 
     if 0 <= plan_from_hour < 24:
@@ -628,6 +662,7 @@ def build_energy_arbitrage_plan(
         "delta_kwh": delta,
         "plan_charge": delta < 0,
         "plan_export_hours": sorted(export_hours),
+        "export_window_hours": sorted(export_window_hours),
         "forecast_tomorrow": {
             "pv_total": round(float(forecast["tomorrow"]["pv_total"]), 2),
             "load_total": round(float(forecast["tomorrow"]["load_total"]), 2),

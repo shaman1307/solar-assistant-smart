@@ -16,12 +16,18 @@ from .plan_physics import (
 HOURS_PER_DAY = 24
 # Calendar noon bound when that day has no peak hours on the selected tariff.
 _ALL_OFFPEAK_COVER_HOUR_END = 12
+# Peak-deficit purchase target: buy 20% more than the walk so a heavier
+# evening hour does not dump the pack onto peak import at the floor.
+GRID_CHARGE_TARGET_HEADROOM = 1.20
+
 
 def morning_cover_bound_from_hour_buys(
-    hour_buys: list[float],
+    hour_buys: list[float] | None = None,
     *,
     offpeak_buy: float,
     epsilon: float = 0.0,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> int | None:
     """Exclusive clock hour when daytime PV cover may end overnight need.
 
@@ -31,13 +37,26 @@ def morning_cover_bound_from_hour_buys(
     - one block starting late (evening only, e.g. truncated series) → its start
       so evening PV does not look like morning cover;
     - all offpeak → None.
+
+    With *cfg* and *today_date* and no *hour_buys*, build the 24h G12 day
+    (peak/offpeak including G12w weekends).
     """
-    n = min(HOURS_PER_DAY, len(hour_buys))
+    buys = list(hour_buys or [])
+    if not buys and cfg is not None and today_date is not None:
+        if isinstance(today_date, datetime):
+            d0 = today_date.date()
+        else:
+            d0 = today_date
+        buys = [
+            get_buy_price(datetime(d0.year, d0.month, d0.day, h), cfg)[0]
+            for h in range(HOURS_PER_DAY)
+        ]
+    n = min(HOURS_PER_DAY, len(buys))
     if n <= 0:
         return None
     off = float(offpeak_buy)
     eps = float(epsilon)
-    is_peak = [float(hour_buys[h]) > off + eps for h in range(n)]
+    is_peak = [float(buys[h]) > off + eps for h in range(n)]
     blocks: list[tuple[int, int]] = []
     i = 0
     while i < n:
@@ -67,6 +86,8 @@ def _day_hour_buys_from_series(
     slots_per_hour: int,
     global_step_offset: int,
     offpeak_buy: float,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> list[float]:
     """24 hourly buy samples for calendar day_index in the step timeline."""
     slots_per_day = HOURS_PER_DAY * slots_per_hour
@@ -75,10 +96,21 @@ def _day_hour_buys_from_series(
     for h in range(HOURS_PER_DAY):
         global_step = day_index * slots_per_day + h * slots_per_hour
         si = global_step - global_step_offset
-        if buy_series is None or si < 0 or si >= len(buy_series):
-            out.append(off)
-        else:
+        if buy_series is not None and 0 <= si < len(buy_series):
             out.append(float(buy_series[si]))
+            continue
+        if cfg is not None and today_date is not None:
+            if isinstance(today_date, datetime):
+                d0 = today_date.date()
+            else:
+                d0 = today_date
+            day = d0 + timedelta(days=int(day_index))
+            price, _ = get_buy_price(
+                datetime(day.year, day.month, day.day, h), cfg,
+            )
+            out.append(float(price))
+            continue
+        out.append(off)
     return out
 
 
@@ -133,6 +165,8 @@ def reserve_soc_kwh_from_step(
     offpeak_buy: float | None = None,
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> float:
     """Battery kWh to keep after *step* for self-use until morning PV covers house.
 
@@ -148,6 +182,7 @@ def reserve_soc_kwh_from_step(
         step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
         buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=False,
         slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
+        cfg=cfg, today_date=today_date,
     )
 
 
@@ -293,11 +328,15 @@ def grid_charge_target_soc_kwh_from_step(
     *,
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> float:
     """SOC worth buying from the grid: floor + peak house deficits until PV covers.
 
     Overnight offpeak load is not bought — the house may sit on the grid at night.
     A day with no peak hours on the selected tariff: floor only.
+    Peak-day deficit above the floor is scaled by ``GRID_CHARGE_TARGET_HEADROOM``
+    so the Chg slot can absorb a heavier evening than the load forecast.
     """
     hour_buys = _day_hour_buys_from_series(
         buy_series,
@@ -305,17 +344,25 @@ def grid_charge_target_soc_kwh_from_step(
         slots_per_hour=slots_per_hour,
         global_step_offset=global_step_offset,
         offpeak_buy=offpeak_buy,
+        cfg=cfg,
+        today_date=today_date,
     )
     if morning_cover_bound_from_hour_buys(
         hour_buys, offpeak_buy=offpeak_buy, epsilon=epsilon,
+        cfg=cfg, today_date=today_date,
     ) is None:
         return float(reserve_floor_kwh)
 
-    return _forward_soc_need_from_step(
+    target = _forward_soc_need_from_step(
         step, pv_series, load_series, reserve_floor_kwh, eta_out, eta_pv_load, epsilon,
         buy_series=buy_series, offpeak_buy=offpeak_buy, peak_deficits_only=True,
         slots_per_hour=slots_per_hour, global_step_offset=global_step_offset,
+        cfg=cfg, today_date=today_date,
     )
+    extra = float(target) - float(reserve_floor_kwh)
+    if extra > float(epsilon):
+        target = float(reserve_floor_kwh) + extra * GRID_CHARGE_TARGET_HEADROOM
+    return float(target)
 
 
 def _forward_soc_need_from_step(
@@ -332,6 +379,8 @@ def _forward_soc_need_from_step(
     peak_deficits_only: bool,
     slots_per_hour: int = 4,
     global_step_offset: int = 0,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> float:
     """Walk forward until PV covers load in that day's tariff morning horizon.
 
@@ -357,9 +406,12 @@ def _forward_soc_need_from_step(
                 slots_per_hour=slots_per_hour,
                 global_step_offset=global_step_offset,
                 offpeak_buy=off,
+                cfg=cfg,
+                today_date=today_date,
             )
             bound_cache[day_index] = morning_cover_bound_from_hour_buys(
                 hour_buys, offpeak_buy=off, epsilon=epsilon,
+                cfg=cfg, today_date=today_date,
             )
         return bound_cache[day_index]
 
@@ -583,6 +635,8 @@ def reserve_soc_per_step(
             offpeak_buy=off,
             slots_per_hour=slots_per_hour,
             global_step_offset=global_step_offset,
+            cfg=cfg,
+            today_date=today_date,
         )
         for s in range(steps)
     ]

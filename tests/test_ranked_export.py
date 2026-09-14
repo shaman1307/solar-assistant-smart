@@ -312,6 +312,49 @@ def test_export_window_includes_16_even_when_pv_covers():
     assert window == {16, 17, 18, 19, 20, 21}
 
 
+def test_export_window_closed_by_forecast_pv_cover_outside_slice():
+    """PV cover at H08 (full-day forecast) closes leftover; H10 is not in the window."""
+    offset = 10 * 4
+    steps = 12 * 4
+    hours = list(range(10, 22))
+    today_pv = [0.0] * 24
+    today_load = [0.5] * 24
+    today_pv[8] = 2.0
+    window = evening_export_window_hours(
+        hours,
+        pv_series=[0.0] * steps,
+        load_series=[0.5 / 4] * steps,
+        rce_step_offset=offset,
+        slots=4,
+        steps=steps,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+        forecast={
+            "today": {"pv": today_pv, "load": today_load},
+            "tomorrow": {"pv": [0.0] * 24, "load": [0.5] * 24},
+        },
+    )
+    assert 10 not in window
+    assert 11 not in window
+    assert window == {16, 17, 18, 19, 20, 21}
+
+
+def test_export_window_overnight_leftover_not_cut_at_midnight():
+    """H23 and tomorrow H00–H06 stay one window until morning PV covers."""
+    hours = [23, 24, 25, 30]
+    window = evening_export_window_hours(
+        hours,
+        pv_series=[0.0] * 32,
+        load_series=[0.15] * 32,
+        rce_step_offset=23 * 4,
+        slots=4,
+        steps=32,
+        eta_pv_load=1.0,
+        epsilon=0.01,
+    )
+    assert window == {23, 24, 25, 30}
+
+
 def test_peak_seeded_then_grows_back_through_16():
     """Window from 16: seed H20, then H19 / H21 / H18 / H17 / H16 by rating."""
     import src.plan_export as pe

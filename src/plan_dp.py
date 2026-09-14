@@ -281,6 +281,8 @@ def run_horizon_dp(
             offpeak_buy=tariff.offpeak_full,
             slots_per_hour=slots_per_hour,
             global_step_offset=rce_step_offset,
+            cfg=cfg,
+            today_date=today_date,
         )
         for s in range(steps)
     ]
@@ -291,6 +293,8 @@ def run_horizon_dp(
             reserve_floor_kwh, eta_out, eta_pv_load, eps_step, offpeak_buy,
             slots_per_hour=slots_per_hour,
             global_step_offset=rce_step_offset,
+            cfg=cfg,
+            today_date=today_date,
         )
         for s in range(steps)
     ]

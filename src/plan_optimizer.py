@@ -214,6 +214,9 @@ def optimize_horizon(
         min_hourly_kwh=dp.min_hourly_transfer,
         export_window_start_hour=dp.window_start,
         skip_export_hours=skip_export_hours,
+        forecast=forecast,
+        cfg=cfg,
+        today_date=today_date,
     )
     return enforce_min_hourly_battery_grid_limits(
         controls,

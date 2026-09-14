@@ -267,8 +267,8 @@ def test_weekday_grid_charge_target_is_peak_deficits_only():
         3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
         global_step_offset=0,
     )
-    # 8 peak q15 × 0.2 kWh, overnight offpeak excluded.
-    assert target == pytest.approx(floor + 1.6)
+    # 8 peak q15 × 0.2 kWh, overnight offpeak excluded, then 20% purchase headroom.
+    assert target == pytest.approx(floor + 1.6 * 1.20)
     assert grid_charge_ac_kw(
         floor + 0.5, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
@@ -277,6 +277,25 @@ def test_weekday_grid_charge_target_is_peak_deficits_only():
         target + 0.1, buy_p=OFF, offpeak_buy=OFF, charge_target_soc_kwh=target,
         head_room_kwh=30.0, charge_ac_cap_kw=1.5, eta_grid=0.925, epsilon=0.01,
     ) == 0.0
+
+
+def test_weekday_grid_charge_target_adds_twenty_pct_headroom():
+    """Peak-deficit purchase is 20% above the walk so evening load miss still covers."""
+    from src.plan_reserve import GRID_CHARGE_TARGET_HEADROOM
+
+    pv = [0.0] * 32 + [0.5] * 4
+    load = [0.2] * len(pv)
+    buy = [OFF] * 24 + [PEAK] * 8 + [PEAK] * 4
+    buy = buy[: len(pv)]
+    floor = 1.5
+    walk = floor + 1.6
+    target = grid_charge_target_soc_kwh_from_step(
+        3, pv, load, buy, floor, 1.0, 1.0, 0.01, offpeak_buy=OFF,
+        global_step_offset=0,
+    )
+    assert GRID_CHARGE_TARGET_HEADROOM == 1.20
+    assert target == pytest.approx(floor + 1.6 * GRID_CHARGE_TARGET_HEADROOM)
+    assert target > walk
 
 
 def test_dark_weekend_day_never_covers_walk_sums_horizon():

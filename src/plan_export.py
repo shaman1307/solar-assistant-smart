@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any
 
 from .grid_config import grid_export_threshold_pln_kwh
 from .plan_physics import (
@@ -12,7 +13,11 @@ from .plan_physics import (
     simulate_hour,
     slots_per_hour_from_scale,
 )
-from .plan_reserve import HOURS_PER_DAY, _ALL_OFFPEAK_COVER_HOUR_END
+from .plan_reserve import (
+    HOURS_PER_DAY,
+    _ALL_OFFPEAK_COVER_HOUR_END,
+    morning_cover_bound_from_hour_buys,
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +183,7 @@ def pick_next_export_hour(
     seed_ratings: dict[int, float] | None = None,
     gap_ratings: dict[int, float] | None = None,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> int:
     """Next hour: seed the unrounded peak, then grow by 5-groszy rating.
 
@@ -201,6 +207,7 @@ def pick_next_export_hour(
         h for h in remaining
         if not _export_seed_jumps_rated_gap(
             int(h), sel, eligible, export_window_start_hour=start,
+            cover_bound=cover_bound,
         )
     ]
     pool = no_gap or list(remaining)
@@ -222,23 +229,30 @@ def _export_seed_jumps_rated_gap(
     ratings: dict[int, float],
     *,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> bool:
     """True when *hour* would skip a still-eligible hour next to the run."""
     if not selected:
         return False
     start = int(export_window_start_hour)
-    if not _same_sale_window(hour, min(selected), export_window_start_hour=start):
+    if not _same_sale_window(
+        hour, min(selected), export_window_start_hour=start, cover_bound=cover_bound,
+    ):
         return False
     lo, hi = min(selected), max(selected)
     h = int(hour)
     if h > hi + 1:
         return any(
-            x in ratings and _same_sale_window(x, h, export_window_start_hour=start)
+            x in ratings and _same_sale_window(
+                x, h, export_window_start_hour=start, cover_bound=cover_bound,
+            )
             for x in range(hi + 1, h)
         )
     if h < lo - 1:
         return any(
-            x in ratings and _same_sale_window(x, h, export_window_start_hour=start)
+            x in ratings and _same_sale_window(
+                x, h, export_window_start_hour=start, cover_bound=cover_bound,
+            )
             for x in range(h + 1, lo)
         )
     return False
@@ -250,6 +264,7 @@ def trim_remaining_after_failed_export_edge(
     selected: set[int],
     failed_hour: int,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> list[int]:
     """Drop same-window hours beyond a failed ≥-threshold edge so a weaker island cannot seed."""
     if not selected:
@@ -259,7 +274,9 @@ def trim_remaining_after_failed_export_edge(
     start = int(export_window_start_hour)
 
     def _other_window(h: int) -> bool:
-        return not _same_sale_window(h, failed, export_window_start_hour=start)
+        return not _same_sale_window(
+            h, failed, export_window_start_hour=start, cover_bound=cover_bound,
+        )
 
     if failed > hi:
         return [x for x in remaining if x < failed or _other_window(x)]
@@ -343,17 +360,34 @@ def _hour_pv_covers_load(
     steps: int,
     eta_pv_load: float,
     epsilon: float,
+    forecast: dict[str, Any] | None = None,
 ) -> bool:
     """Whether this clock hour's PV covers house load (generation underway)."""
     idxs = _hour_steps_in_horizon(
         hour=hour, steps=steps, rce_step_offset=rce_step_offset,
         slots_per_hour=slots,
     )
-    if not idxs:
-        return False
-    pv_h = sum(float(pv_series[i]) for i in idxs)
-    load_h = sum(float(load_series[i]) for i in idxs)
+    if idxs:
+        pv_h = sum(float(pv_series[i]) for i in idxs)
+        load_h = sum(float(load_series[i]) for i in idxs)
+    else:
+        day = int(hour) // HOURS_PER_DAY
+        clock = int(hour) % HOURS_PER_DAY
+        if day == 0:
+            day_fc = (forecast or {}).get("today") or {}
+        elif day == 1:
+            day_fc = (forecast or {}).get("tomorrow") or {}
+        else:
+            return False
+        pv_list = day_fc.get("pv") or []
+        load_list = day_fc.get("load") or []
+        if clock >= len(pv_list) or clock >= len(load_list):
+            return False
+        pv_h = float(pv_list[clock] or 0.0)
+        load_h = float(load_list[clock] or 0.0)
     if eta_pv_load <= 0:
+        return False
+    if pv_h <= float(epsilon):
         return False
     return pv_h * float(eta_pv_load) >= load_h - float(epsilon)
 
@@ -369,42 +403,55 @@ def evening_export_window_hours(
     eta_pv_load: float,
     epsilon: float,
     export_window_start_hour: int = 16,
+    forecast: dict[str, Any] | None = None,
+    cover_bound: int | None = None,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> set[int]:
-    """Hours from *export_window_start_hour* until morning PV covers house load.
+    """Hours from *export_window_start_hour* through overnight until PV covers load.
 
-    Clock hours start–23 are in the sale window even if PV still covers. Overnight
-    00–11 stay in until the first hour where PV covers load. Hours from noon up
-    to (but not including) the start hour stay out.
+    Midnight does not split the window. Leftover stays open until the first hour
+    where PV covers the house, looking only as far as the next G12 morning-peak
+    end. Clock hours from that bound up to (not including) the start hour stay
+    out. Cover uses the full available PV/load (forecast hourly when the
+    optimizer slice omits an hour).
     """
     start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
-    ordered = sorted({int(h) for h in hours})
-    if not ordered:
-        return set()
-    covers = {
-        h: _hour_pv_covers_load(
-            h, pv_series=pv_series, load_series=load_series,
-            rce_step_offset=rce_step_offset, slots=slots, steps=steps,
-            eta_pv_load=eta_pv_load, epsilon=epsilon,
+    bound = cover_bound
+    if bound is None and cfg is not None and today_date is not None:
+        tariff = g12_tariff_from_cfg(cfg)
+        bound = morning_cover_bound_from_hour_buys(
+            offpeak_buy=tariff.offpeak_full, epsilon=epsilon,
+            cfg=cfg, today_date=today_date,
         )
-        for h in ordered
-    }
+    if bound is None:
+        bound = _ALL_OFFPEAK_COVER_HOUR_END
+    bound = max(0, min(HOURS_PER_DAY, int(bound)))
+    hours_set = {int(h) for h in hours}
+    if not hours_set:
+        return set()
+    hi = max(hours_set)
     in_window: set[int] = set()
-    days = sorted({h // HOURS_PER_DAY for h in ordered})
-    for day in days:
-        day_hours = [h for h in ordered if h // HOURS_PER_DAY == day]
-        evening = [
-            h for h in day_hours
-            if h % HOURS_PER_DAY >= start
-        ]
-        morning = [
-            h for h in day_hours
-            if h % HOURS_PER_DAY < _ALL_OFFPEAK_COVER_HOUR_END
-        ]
-        in_window.update(evening)
-        for h in morning:
-            if covers[h]:
-                break
-            in_window.add(h)
+    leftover_open = True
+    for h in range(0, hi + 1):
+        clock = h % HOURS_PER_DAY
+        if clock >= start:
+            leftover_open = True
+            if h in hours_set:
+                in_window.add(h)
+            continue
+        if clock < bound:
+            covered = _hour_pv_covers_load(
+                h, pv_series=pv_series, load_series=load_series,
+                rce_step_offset=rce_step_offset, slots=slots, steps=steps,
+                eta_pv_load=eta_pv_load, epsilon=epsilon, forecast=forecast,
+            )
+            if covered:
+                leftover_open = False
+            elif leftover_open and h in hours_set:
+                in_window.add(h)
+            continue
+        leftover_open = False
     return in_window
 
 
@@ -427,17 +474,21 @@ def _same_sale_window(
     hour_b: int,
     *,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> bool:
     """Whether two absolute hours sit in one start-hour→morning sale window.
 
-    Daytime from noon until *export_window_start_hour* is a gap, so tonight and
-    tomorrow evening are distinct.
+    Hours from the G12 morning-peak end until *export_window_start_hour* are a
+    gap, so tonight and tomorrow evening are distinct. Midnight is not a gap.
     """
     start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
+    bound = _ALL_OFFPEAK_COVER_HOUR_END if cover_bound is None else max(
+        0, min(HOURS_PER_DAY, int(cover_bound)),
+    )
     lo, hi = (int(hour_a), int(hour_b)) if int(hour_a) <= int(hour_b) else (int(hour_b), int(hour_a))
     for h in range(lo, hi + 1):
         clock = h % HOURS_PER_DAY
-        if _ALL_OFFPEAK_COVER_HOUR_END <= clock < start:
+        if bound <= clock < start:
             return False
     return True
 
@@ -447,6 +498,7 @@ def _export_hours_same_run(
     hour: int,
     *,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> set[int]:
     """Hours in the same start-hour→morning sale window as *hour* (not next evening)."""
     target = int(hour)
@@ -454,6 +506,7 @@ def _export_hours_same_run(
     for h in hours:
         if _same_sale_window(
             int(h), target, export_window_start_hour=export_window_start_hour,
+            cover_bound=cover_bound,
         ):
             out.add(int(h))
     return out
@@ -463,6 +516,7 @@ def sale_windows(
     hours: list[int] | set[int],
     *,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> list[list[int]]:
     """Partition hours into chronological start-hour→morning sale windows."""
     ordered = sorted({int(h) for h in hours})
@@ -472,7 +526,9 @@ def sale_windows(
     windows: list[list[int]] = []
     run = [ordered[0]]
     for h in ordered[1:]:
-        if _same_sale_window(run[-1], h, export_window_start_hour=start):
+        if _same_sale_window(
+            run[-1], h, export_window_start_hour=start, cover_bound=cover_bound,
+        ):
             run.append(h)
         else:
             windows.append(run)
@@ -488,6 +544,7 @@ def hold_soc_for_later_battery_grid_export_claims(
     eta_out: float,
     ratings: dict[int, float] | None = None,
     export_window_start_hour: int = 16,
+    cover_bound: int | None = None,
 ) -> float:
     """DC kWh to hold for richer later hours in the same start-hour→morning window.
 
@@ -501,6 +558,7 @@ def hold_soc_for_later_battery_grid_export_claims(
     same_run = _export_hours_same_run(
         set(claims) | {int(from_hour)}, int(from_hour),
         export_window_start_hour=export_window_start_hour,
+        cover_bound=cover_bound,
     )
     from_rating = (
         float(ratings[int(from_hour)])
@@ -834,16 +892,21 @@ def plan_battery_grid_export(
     min_hourly_kwh: float,
     export_window_start_hour: int = 16,
     skip_export_hours: set[int] | None = None,
+    forecast: dict[str, Any] | None = None,
+    cfg: dict[str, Any] | None = None,
+    today_date=None,
 ) -> list[HourControl]:
     """Plan battery→grid export from the config start hour until morning PV cover.
 
     Eligible hours are clock start–23 plus overnight until PV covers again, with
-    hourly avg-RCE (0.01) ≥ *export_floor*. Each start-hour→morning window is
-    filled in clock order so a richer next evening cannot skip tonight. Seed
-    the richest unrounded avg, then grow by 5-groszy rating (ties: closer to
-    the run). A failed ≥-threshold edge closes that side (do not seed a weaker
-    island past it). Chrono fill sells leftover down to survive-after-that-hour,
-    so the right edge opens when the window end moves.
+    hourly avg-RCE (0.01) ≥ *export_floor*. Cover and leftover use the full
+    available PV/load and G12 peak/offpeak, not the optimizer hour slice.
+    Each start-hour→morning window is filled in clock order so a richer next
+    evening cannot skip tonight. Seed the richest unrounded avg, then grow by
+    5-groszy rating (ties: closer to the run). A failed ≥-threshold edge closes
+    that side (do not seed a weaker island past it). Chrono fill sells leftover
+    down to survive-after-that-hour, so the right edge opens when the window
+    end moves.
     """
     if steps <= 0:
         return list(base_controls)
@@ -851,6 +914,13 @@ def plan_battery_grid_export(
     hours = sorted({
         (rce_step_offset + i) // slots for i in range(steps)
     })
+    cover_bound = None
+    if cfg is not None and today_date is not None:
+        tariff = g12_tariff_from_cfg(cfg)
+        cover_bound = morning_cover_bound_from_hour_buys(
+            offpeak_buy=tariff.offpeak_full, epsilon=eps_step,
+            cfg=cfg, today_date=today_date,
+        )
     window = evening_export_window_hours(
         list(hours),
         pv_series=pv_series,
@@ -861,6 +931,10 @@ def plan_battery_grid_export(
         eta_pv_load=eta_pv_load,
         epsilon=eps_step,
         export_window_start_hour=export_window_start_hour,
+        forecast=forecast,
+        cover_bound=cover_bound,
+        cfg=cfg,
+        today_date=today_date,
     )
     ratings: dict[int, float] = {}
     raw_avgs: dict[int, float] = {}
@@ -956,6 +1030,7 @@ def plan_battery_grid_export(
     for window_hours in sale_windows(
         list(ratings.keys()),
         export_window_start_hour=export_window_start_hour,
+        cover_bound=cover_bound,
     ):
         remaining = list(window_hours)
         last_assigned: int | None = None
@@ -969,10 +1044,12 @@ def plan_battery_grid_export(
                 seed_ratings=raw_avgs,
                 gap_ratings=ratings,
                 export_window_start_hour=export_window_start_hour,
+                cover_bound=cover_bound,
             )
             if _export_seed_jumps_rated_gap(
                 h, window_selected, ratings,
                 export_window_start_hour=export_window_start_hour,
+                cover_bound=cover_bound,
             ):
                 remaining = [x for x in remaining if x != h]
                 continue
@@ -987,12 +1064,14 @@ def plan_battery_grid_export(
                 remaining = trim_remaining_after_failed_export_edge(
                     remaining, selected=window_selected, failed_hour=h,
                     export_window_start_hour=export_window_start_hour,
+                    cover_bound=cover_bound,
                 )
                 continue
             soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
             hold = hold_soc_for_later_battery_grid_export_claims(
                 draft, from_hour=h, eta_out=eta_out, ratings=ratings,
                 export_window_start_hour=export_window_start_hour,
+                cover_bound=cover_bound,
             )
             claim = plan_hour_battery_grid_export_claim(
                 hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
@@ -1004,6 +1083,7 @@ def plan_battery_grid_export(
                 remaining = trim_remaining_after_failed_export_edge(
                     remaining, selected=window_selected, failed_hour=h,
                     export_window_start_hour=export_window_start_hour,
+                    cover_bound=cover_bound,
                 )
                 continue
             draft[h] = claim
@@ -1035,6 +1115,7 @@ def plan_battery_grid_export(
                 hold_soc_kwh=hold_soc_for_later_battery_grid_export_claims(
                     hold_from, from_hour=hour, eta_out=eta_out, ratings=ratings,
                     export_window_start_hour=export_window_start_hour,
+                    cover_bound=cover_bound,
                 ),
                 pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
                 rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
