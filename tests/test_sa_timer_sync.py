@@ -83,3 +83,51 @@ def test_sa_charge_cap_at_least_five_above_live_soc():
     assert expected is not None
     assert expected["charge_slots"][0]["capacity_pct"] == 22
 
+
+def test_write_metrics_retries_crc_then_succeeds():
+    """CRC on the first WS+REST pass retries so a :00 Chg write is not idle until :15."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from src import sa_client
+
+    n_set = {"n": 0}
+
+    class Sock:
+        async def set_setting(self, topic, value):
+            del topic, value
+            n_set["n"] += 1
+            if n_set["n"] == 1:
+                raise ValueError("CRC error")
+
+        async def close(self):
+            return None
+
+    class Rest:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def set_metric(self, topic, value):
+            del topic, value
+            raise RuntimeError("API error 422: CRC error")
+
+    async def fake_connect(opts):
+        del opts
+        return Sock()
+
+    cfg = {"sa": {"host": "127.0.0.1", "password": "x"}}
+    with (
+        patch.object(sa_client, "_acquire_sa_lock", AsyncMock(return_value=True)),
+        patch.object(sa_client, "_release_sa_lock"),
+        patch.object(sa_client, "_build_client", return_value=Rest()),
+        patch.object(sa_client.asyncio, "sleep", AsyncMock()) as sleep,
+        patch("py_solar_assistant.connect", fake_connect),
+    ):
+        asyncio.run(sa_client._write_metrics(cfg, [("inverter_1/timed_charge", "1")]))
+    assert n_set["n"] == 2
+    sleep.assert_awaited_once()
+    assert sleep.await_args.args[0] == 2.0
+

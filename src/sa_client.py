@@ -69,6 +69,8 @@ ENUM_VERIFY_FIRST_PAUSE_S = 3.0
 _SA_CLIENT_TIMEOUT_S = 35.0
 _SA_TIMEOUT_S = 30
 _SA_LOCK_WAIT_S = 2.0
+# CRC 422 from SA/SRNE: retry so a :00 Chg/Dis write is not idle until :15.
+_SA_CRC_RETRY_PAUSES_S = (2.0, 5.0, 8.0)
 _RULES_CACHE_TTL_S = 120
 _METRICS_CACHE_TTL_S = 20
 _RULES_GLOB = f"{_INVERTER_PREFIX}/*"
@@ -497,32 +499,47 @@ async def _write_metrics(cfg: dict, writes: list[tuple[str, str]], *, lock_wait_
     """Write SA settings via WebSocket (REST POST returns 500 on some SA/SRNE builds)."""
     if not writes:
         return
-    if not await _acquire_sa_lock(wait_s=lock_wait_s):
-        raise TimeoutError("SolarAssistant busy")
-
-    host = cfg["sa"]["host"]
-    password = cfg["sa"]["password"]
-    try:
-        from py_solar_assistant import Options, connect
-
-        sock = await asyncio.wait_for(
-            connect(Options(local_ip=host, password=password)),
-            timeout=10,
-        )
+    last_exc: BaseException | None = None
+    for attempt, pause in enumerate((0.0, *_SA_CRC_RETRY_PAUSES_S)):
+        if pause:
+            log.warning(
+                "SA write CRC retry %s after %.0fs (%r)",
+                attempt, pause, last_exc,
+            )
+            await asyncio.sleep(pause)
+        if not await _acquire_sa_lock(wait_s=lock_wait_s):
+            raise TimeoutError("SolarAssistant busy")
+        host = cfg["sa"]["host"]
+        password = cfg["sa"]["password"]
         try:
-            for topic, value in writes:
-                log.info("SA write %s=%s", topic, value)
-                await asyncio.wait_for(sock.set_setting(topic, value), timeout=25)
+            try:
+                from py_solar_assistant import Options, connect
+
+                sock = await asyncio.wait_for(
+                    connect(Options(local_ip=host, password=password)),
+                    timeout=10,
+                )
+                try:
+                    for topic, value in writes:
+                        log.info("SA write %s=%s", topic, value)
+                        await asyncio.wait_for(sock.set_setting(topic, value), timeout=25)
+                finally:
+                    await sock.close()
+                return
+            except Exception as ws_exc:
+                log.warning("SA WebSocket write failed, trying REST: %r", ws_exc)
+                client = _build_client(cfg)
+                async with client as c:
+                    for topic, value in writes:
+                        await asyncio.wait_for(c.set_metric(topic, value), timeout=15)
+                return
+        except Exception as exc:
+            last_exc = exc
+            if "crc" not in str(exc).lower():
+                raise
         finally:
-            await sock.close()
-    except Exception as ws_exc:
-        log.warning("SA WebSocket write failed, trying REST: %r", ws_exc)
-        client = _build_client(cfg)
-        async with client as c:
-            for topic, value in writes:
-                await asyncio.wait_for(c.set_metric(topic, value), timeout=15)
-    finally:
-        _release_sa_lock()
+            _release_sa_lock()
+    raise last_exc or TimeoutError("SolarAssistant busy")
 
 
 # SRNE via SolarAssistant rejects these timer topics (API 422 Unknown register).
