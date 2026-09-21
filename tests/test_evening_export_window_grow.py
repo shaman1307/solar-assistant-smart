@@ -125,6 +125,48 @@ def test_soc_closed_right_edge_does_not_seed_weaker_island():
     assert export[22] < 0.5, f"H22 must not island past H21, got {export}"
 
 
+def test_second_rated_tonight_exports_despite_richer_morning_seed():
+    """H07 is richest; 2nd-rated H19 still Dis, then H20 glues. Overnight trough stays weaker."""
+    rce = {18: 1.09, 19: 1.31, 20: 1.24, 21: 0.90}
+    for h in range(22, 30):
+        rce[h] = 0.82
+    rce[30] = 1.01
+    rce[31] = 1.50
+    load_per_hour = 0.8
+    reserves = {
+        h: 8.0 + load_per_hour * max(0, 31 - h) for h in range(18, 32)
+    }
+    export, _ = _export_plan(
+        rce_by_hour=rce,
+        reserves_by_hour=reserves,
+        initial_soc_kwh=36.0,
+        start_hour=18,
+        n_hours=14,
+        min_kwh=8.0,
+        export_floor=0.68,
+        load_per_step=0.2,
+    )
+    assert export[31] >= 2.0, f"morning H07 must export, got {export}"
+    assert export[19] >= 2.0, f"tonight H19 must export as 2nd-rated, got {export}"
+    assert export[20] >= 2.0, f"H20 must glue to H19, got {export}"
+
+
+def test_second_rated_distant_peak_opens_before_adjacent_trough():
+    """H19 seed, 2nd-rated H22 across H20/H21 trough still gets a Dis island."""
+    export, _ = _export_plan(
+        rce_by_hour={18: 0.80, 19: 1.00, 20: 0.70, 21: 0.60, 22: 0.90},
+        reserves_by_hour={18: 12.0, 19: 12.0, 20: 12.0, 21: 12.0, 22: 12.0},
+        initial_soc_kwh=40.0,
+        start_hour=18,
+        n_hours=5,
+        min_kwh=8.0,
+        export_floor=0.50,
+        min_hourly_kwh=0.5,
+    )
+    assert export[19] >= 2.0, f"H19 seed must export, got {export}"
+    assert export[22] >= 2.0, f"2nd-rated H22 must island, got {export}"
+
+
 def test_partial_right_edge_starts_at_hour_start():
     """Right-edge 30/45 min Dis starts at :00, not a tail."""
     export, qmask = _export_plan(

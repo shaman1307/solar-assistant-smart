@@ -162,8 +162,8 @@ def rank_hours_by_avg_rce(
     """Hours with rating ≥ floor, richest first (ties: earlier hour).
 
     Rating is avg RCE rounded to hundredths. Allocation uses
-    ``pick_next_export_hour``: seed the unrounded peak, then grow by
-    5-groszy rating.
+    ``pick_next_export_hour``: seed the unrounded peak, then the 2nd-rated
+    hour (may skip a weaker trough), then grow by 5-groszy rating.
     """
     scored: list[tuple[float, int]] = []
     for h in hours:
@@ -185,11 +185,12 @@ def pick_next_export_hour(
     export_window_start_hour: int = 16,
     cover_bound: int | None = None,
 ) -> int:
-    """Next hour: seed the unrounded peak, then grow by 5-groszy rating.
+    """Next hour: seed the unrounded peak, then 2nd-rated, then glue edges.
 
-    After the seed, *ratings* are 5-groszy avgs among hours that do not jump
-    a still-eligible gap. Same rating: closer to the selected window, then
-    neighbour of *last_hour*, then earlier hour.
+    After the seed, *ratings* are 5-groszy avgs. The 2nd-rated hour may skip a
+    trough of weaker eligible hours. Later hours do not jump a still-eligible
+    gap. Same rating: closer to the selected window, then neighbour of
+    *last_hour*, then earlier hour.
     """
     if not remaining:
         raise ValueError("remaining hours empty")
@@ -203,11 +204,13 @@ def pick_next_export_hour(
         return min(tied)
 
     eligible = gap_ratings if gap_ratings is not None else ratings
+    ignore_weaker = len(sel) == 1
     no_gap = [
         h for h in remaining
         if not _export_seed_jumps_rated_gap(
             int(h), sel, eligible, export_window_start_hour=start,
             cover_bound=cover_bound,
+            ignore_weaker_gap_hours=ignore_weaker,
         )
     ]
     pool = no_gap or list(remaining)
@@ -230,8 +233,13 @@ def _export_seed_jumps_rated_gap(
     *,
     export_window_start_hour: int = 16,
     cover_bound: int | None = None,
+    ignore_weaker_gap_hours: bool = False,
 ) -> bool:
-    """True when *hour* would skip a still-eligible hour next to the run."""
+    """True when *hour* would skip a still-eligible hour next to the run.
+
+    Eligible hours in the gap block the jump. With *ignore_weaker_gap_hours*,
+    only equal-or-better gap hours block (2nd-rated seed past a weaker trough).
+    """
     if not selected:
         return False
     start = int(export_window_start_hour)
@@ -241,20 +249,23 @@ def _export_seed_jumps_rated_gap(
         return False
     lo, hi = min(selected), max(selected)
     h = int(hour)
+    cand = float(ratings[h]) if h in ratings else None
+
+    def _gap_blocks(x: int) -> bool:
+        if x not in ratings:
+            return False
+        if not _same_sale_window(
+            x, h, export_window_start_hour=start, cover_bound=cover_bound,
+        ):
+            return False
+        if not ignore_weaker_gap_hours or cand is None:
+            return True
+        return float(ratings[x]) + 1e-12 >= cand
+
     if h > hi + 1:
-        return any(
-            x in ratings and _same_sale_window(
-                x, h, export_window_start_hour=start, cover_bound=cover_bound,
-            )
-            for x in range(hi + 1, h)
-        )
+        return any(_gap_blocks(x) for x in range(hi + 1, h))
     if h < lo - 1:
-        return any(
-            x in ratings and _same_sale_window(
-                x, h, export_window_start_hour=start, cover_bound=cover_bound,
-            )
-            for x in range(h + 1, lo)
-        )
+        return any(_gap_blocks(x) for x in range(h + 1, lo))
     return False
 
 
@@ -902,11 +913,11 @@ def plan_battery_grid_export(
     hourly avg-RCE (0.01) ≥ *export_floor*. Cover and leftover use the full
     available PV/load and G12 peak/offpeak, not the optimizer hour slice.
     Each start-hour→morning window is filled in clock order so a richer next
-    evening cannot skip tonight. Seed the richest unrounded avg, then grow by
-    5-groszy rating (ties: closer to the run). A failed ≥-threshold edge closes
-    that side (do not seed a weaker island past it). Chrono fill sells leftover
-    down to survive-after-that-hour, so the right edge opens when the window
-    end moves.
+    evening cannot skip tonight. Seed the richest unrounded avg, then the
+    2nd-rated hour (may skip a weaker trough), then grow by 5-groszy rating
+    (ties: closer to the run). A failed ≥-threshold edge closes that side
+    (do not seed a weaker island past it). Chrono fill sells leftover down to
+    survive-after-that-hour, so the right edge opens when the window end moves.
     """
     if steps <= 0:
         return list(base_controls)
@@ -1024,7 +1035,7 @@ def plan_battery_grid_export(
     )
 
     # Fill each start-hour→morning window in clock order. Seed the richest
-    # unrounded avg, then grow by 5-groszy rating.
+    # unrounded avg, then the 2nd-rated hour, then grow by 5-groszy rating.
     selected: set[int] = set()
     draft: dict[int, BatteryGridExportHourClaim] = {}
     for window_hours in sale_windows(
@@ -1050,6 +1061,7 @@ def plan_battery_grid_export(
                 h, window_selected, ratings,
                 export_window_start_hour=export_window_start_hour,
                 cover_bound=cover_bound,
+                ignore_weaker_gap_hours=len(window_selected) == 1,
             ):
                 remaining = [x for x in remaining if x != h]
                 continue

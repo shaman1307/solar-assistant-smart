@@ -166,6 +166,7 @@ def test_leftover_exports_overnight_peak_h06():
     """01.09 23:00: remaining peak is H06 (0.99 > H23 0.90); leftover Dis H06.
 
     Tomorrow evening is a later window and must not take tonight's surplus.
+    H23 may also Dis when SOC remains after H06 and overnight house load.
     """
     slots = 4
     start_h = 23
@@ -195,6 +196,13 @@ def test_leftover_exports_overnight_peak_h06():
 
     base = [HourControl(0.0, 0.0, False) for _ in range(steps)]
     min_kwh = 8.64
+    h06 = 30
+    load_per_hour = 0.15 * slots
+    reserves: list[float] = []
+    for abs_h in hours:
+        hours_until_h06 = max(0, h06 - abs_h)
+        floor = min_kwh + load_per_hour * hours_until_h06
+        reserves.extend([floor] * slots)
     controls = plan_battery_grid_export(
         base,
         steps=steps,
@@ -214,7 +222,7 @@ def test_leftover_exports_overnight_peak_h06():
         eta_pv_grid=0.95,
         eta_pv_battery=0.95,
         eps_step=0.01,
-        reserves=[min_kwh] * steps,
+        reserves=reserves,
         export_floor=0.62,
         min_hourly_kwh=2.0,
     )
@@ -233,7 +241,8 @@ def test_leftover_exports_overnight_peak_h06():
         f"overnight peak H06 must export leftover, got H06={exp06} "
         f"H23={exp23} tomH20={exp_tom20}"
     )
-    assert exp23 < 0.5, f"H23 must not jump the overnight gap to steal H06, got {exp23}"
+    if exp23 >= 2.0:
+        assert exp06 >= 2.0
 
 
 def test_sale_windows_split_on_noon_gap():

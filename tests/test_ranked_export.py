@@ -127,6 +127,20 @@ def test_pick_next_export_hour_seeds_peak_then_grows_edges():
     ) == 19
 
 
+def test_pick_next_second_rated_skips_weaker_trough():
+    """After morning H07 seed, 2nd-rated tonight H19 wins over adjacent H06."""
+    grow = {0: 0.85, 4: 0.80, 6: 1.00, 7: 1.50, 19: 1.30, 20: 1.25, 21: 0.90}
+    gap = {0: 0.83, 4: 0.82, 6: 1.01, 7: 1.50, 19: 1.31, 20: 1.24, 21: 0.90}
+    remaining = [0, 4, 6, 7, 19, 20, 21]
+    assert pick_next_export_hour(remaining, grow, selected=set(), seed_ratings=gap) == 7
+    assert pick_next_export_hour(
+        [0, 4, 6, 19, 20, 21], grow, selected={7}, last_hour=7, gap_ratings=gap,
+    ) == 19
+    assert pick_next_export_hour(
+        [0, 4, 6, 20, 21], grow, selected={7, 19}, last_hour=19, gap_ratings=gap,
+    ) == 20
+
+
 def test_equal_rating_after_rich_hour_prefers_neighbor():
     """Allocator grows the nearer equal-rating edge before a distant hour."""
     import src.plan_export as pe
