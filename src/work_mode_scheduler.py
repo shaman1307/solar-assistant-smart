@@ -19,7 +19,6 @@ from .influxdb import now_warsaw
 from .sqlite_store import read_plan
 from .timer_plan import (
     ACTION_CHARGE_GRID,
-    GRID_EXPORT_ACTION_MIN_KWH,
     hour_has_timer_schedule,
     normalize_action,
     plan_row_grid_export_kwh,
@@ -283,10 +282,9 @@ def limit_home_due_for_timer(
             return False, None
         return timer_discharge_end_due(timer_txt, now, plan_hour=plan_hour)
 
-    # Plan cell empty — do not cut discharge while SA slot or in-hour export is active.
+    # Empty Timer Schedule ends export. A live SA window that still covers
+    # now stays. kWh already exported this hour does not keep the window open.
     if sa_rules and sa_discharge_slot_active_at(sa_rules, now):
-        return False, None
-    if plan_row and plan_row_grid_export_kwh(plan_row) > GRID_EXPORT_ACTION_MIN_KWH:
         return False, None
     return True, None
 

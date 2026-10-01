@@ -125,13 +125,14 @@ def test_limit_home_not_due_when_plan_timer_empty_but_sa_slot_active():
     assert end is None
 
 
-def test_limit_home_not_due_when_plan_timer_empty_but_row_has_export():
+def test_limit_home_due_when_timer_empty_even_if_row_already_exported():
+    """Empty Timer Schedule stops export. kWh already on the row does not keep it open."""
     now = datetime(2026, 7, 7, 7, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
     row = {"grid_export": 5.1, "action": "Discharging to Grid and Load"}
     due, end = limit_home_due_for_timer(
         "", now, plan_hour=7, plan_row=row,
     )
-    assert due is False
+    assert due is True
     assert end is None
 
 

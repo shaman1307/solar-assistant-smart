@@ -367,3 +367,46 @@ def test_jul25_from_16_overnight_soc_stays_above_min_until_morning_pv_cover():
         PV_TOMORROW[cover_hour], LOAD_TOMORROW[cover_hour], eta_pv_load=eta_pv_load,
     )
     assert deficit <= 0.01
+
+
+# Actual meter kWh, 2026-09-30 evening and 2026-10-01 morning.
+# Battery 47.6 kWh, min SOC 16%. PV covers the house at 08:00.
+_SEP30_PV = [0.0] * 20 + [0.0, 0.0, 0.0, 0.0]
+_SEP30_LOAD = [0.0] * 20 + [0.599, 0.529, 0.613, 1.005]
+_OCT1_PV = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.022, 1.477]
+_OCT1_LOAD = [1.381, 0.818, 0.872, 0.516, 0.477, 0.482, 0.558, 0.474, 0.462]
+
+
+def test_sep30_end_at_24pct_buys_before_morning_pv():
+    """H20 ending at 24% puts the house on the grid before 08:00 PV.
+
+    Stopping after H19 at 39% (the cap40% plan) still covers the night.
+    """
+    cfg = _cfg()
+    cap = 47.6
+    cfg["battery"]["capacity_kwh"] = cap
+    cover_hour = 8
+
+    def _imports_before_cover(soc_pct: float, tonight_from: int) -> list[tuple[int, float]]:
+        soc = soc_pct / 100.0 * cap
+        tonight = _idle_forward_soc(
+            soc_kwh=soc, pv_hourly=_SEP30_PV, load_hourly=_SEP30_LOAD,
+            from_hour=tonight_from, until_hour_exclusive=24, cfg=cfg,
+        )
+        soc2 = tonight[-1][1] / 100.0 * cap if tonight else soc
+        morning = _idle_forward_soc(
+            soc_kwh=soc2, pv_hourly=_OCT1_PV, load_hourly=_OCT1_LOAD,
+            from_hour=0, until_hour_exclusive=cover_hour, cfg=cfg,
+        )
+        bought = [(h, imp) for h, _pct, imp in tonight if imp > 0.01]
+        bought += [(h, imp) for h, _pct, imp in morning if imp > 0.01]
+        return bought
+
+    bought_24 = _imports_before_cover(24.0, 21)
+    assert bought_24, "24% after H20 must hit the grid before morning PV"
+    assert bought_24[0][0] <= 1 or bought_24[0][0] >= 21
+
+    bought_39 = _imports_before_cover(39.0, 20)
+    assert bought_39 == [], (
+        f"39% after H19 should cover the house until {cover_hour:02d}:00, bought {bought_39}"
+    )
