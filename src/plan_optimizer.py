@@ -142,6 +142,7 @@ def optimize_horizon(
     rce_step_offset: int = 0,
     front_load_skip_leading_slots: int | None = None,
     skip_export_hours: set[int] | None = None,
+    prev_export_end_min: int | None = None,
 ) -> list[HourControl]:
     """DP charge/idle, then offpeak grid charge, then ranked battery export."""
     dp = run_horizon_dp(
@@ -213,6 +214,7 @@ def optimize_horizon(
         export_floor=dp.export_floor,
         min_hourly_kwh=dp.min_hourly_transfer,
         export_window_start_hour=dp.window_start,
+        prev_export_end_min=prev_export_end_min,
         skip_export_hours=skip_export_hours,
         forecast=forecast,
         cfg=cfg,

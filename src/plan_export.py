@@ -327,23 +327,12 @@ def export_span_candidates(role: str) -> list[tuple[int, int]]:
     """Allowed (start_q, end_q_exclusive) spans for a window role, longest first.
 
     Quarters: 0=:00-:15 … 3=:45-:00. end_exclusive=4 means end at next :00.
+    A run keeps full hours until its last hour. That last hour, and a
+    single-hour window, start at :00 and shorten by ending earlier.
     """
-    if role == "middle":
+    if role in ("middle", "first"):
         return [(0, 4)]
-    if role == "first":
-        # Start :00/:15/:30; must end at next :00.
-        return [(0, 4), (1, 4), (2, 4)]
-    if role == "last":
-        # Start :00 only; end :00 / :45 / :30.
-        return [(0, 4), (0, 3), (0, 2)]
-    # single-hour window: start :00/:15/:30, end :30/:45/:00
-    cands: list[tuple[int, int, int]] = []
-    for start in (0, 1, 2):
-        for end in (2, 3, 4):
-            if end > start:
-                cands.append((start, end, end - start))
-    cands.sort(key=lambda t: (-t[2], t[0], t[1]))
-    return [(s, e) for s, e, _ in cands]
+    return [(0, 4), (0, 3), (0, 2)]
 
 
 def _hour_steps_in_horizon(
@@ -557,12 +546,10 @@ def hold_soc_for_later_battery_grid_export_claims(
     export_window_start_hour: int = 16,
     cover_bound: int | None = None,
 ) -> float:
-    """DC kWh to hold for richer later hours in the same start-hour→morning window.
+    """DC kWh to hold for a strictly richer later hour in the same window.
 
-    Survive-until-morning is already in per-step reserves. Do not hold SOC for a
-    later evening across the noon→start-hour gap — that window is re-planned after
-    daytime PV. A hole (hour with no Dis) does not split tonight's window.
-    Within tonight, only strictly higher-rated later hours may shrink this hour.
+    A later cheaper hour does not shrink this one. Survive-until-morning stays
+    in the per-step reserves. A later evening across the noon gap is separate.
     """
     if not claims:
         return 0.0
@@ -581,10 +568,9 @@ def hold_soc_for_later_battery_grid_export_claims(
         hi = int(h)
         if hi <= int(from_hour) or hi not in same_run:
             continue
-        if from_rating is not None:
-            later_rating = float(ratings.get(hi, 0.0)) if ratings is not None else 0.0
-            if later_rating <= from_rating + 1e-12:
-                continue
+        later_rating = float(ratings.get(hi, 0.0)) if ratings is not None else 0.0
+        if from_rating is None or later_rating <= from_rating + 1e-12:
+            continue
         need_ac += claim.export_ac_kwh
     if eta_out <= 0:
         return need_ac
@@ -800,6 +786,7 @@ def plan_hour_battery_grid_export_claim(
     eta_pv_battery: float,
     eps_step: float,
     min_hourly_kwh: float,
+    prev_export_end_min: int | None = None,
 ) -> BatteryGridExportHourClaim | None:
     """Pick span + per-quarter export for one hour from remaining SOC budget.
 
@@ -808,6 +795,10 @@ def plan_hour_battery_grid_export_claim(
     revenue, then volume, then earlier start. Tries max DC power first; if
     SOC cannot fill a span, tries lower uniform power so Bat Discharge still
     meets *min_hourly_kwh*. Claim sim does not bank PV outside the Dis span.
+
+    *prev_export_end_min* is the minute-of-day when the previous Dis window
+    ended (committed hour, or the previous claim). The next window starts on
+    that minute or at least 30 minutes later.
     """
     prices = list(rce_q) if rce_q is not None else [None, None, None, None]
     while len(prices) < 4:
@@ -832,6 +823,11 @@ def plan_hour_battery_grid_export_claim(
         bat_dis: float,
     ) -> None:
         nonlocal best, best_key
+        if prev_export_end_min is not None:
+            start_min = int(hour) * 60 + int(span[0]) * 15
+            gap = start_min - int(prev_export_end_min)
+            if gap < 0 or 0 < gap < 30:
+                return
         vol = sum(exports)
         if vol <= eps_step:
             return
@@ -848,6 +844,11 @@ def plan_hour_battery_grid_export_claim(
             )
 
     for span in export_span_candidates(role):
+        if prev_export_end_min is not None:
+            start_min = int(hour) * 60 + int(span[0]) * 15
+            gap = start_min - int(prev_export_end_min)
+            if gap < 0 or 0 < gap < 30:
+                continue
         # 1) Max power, then trim empty quarters to a legal sub-span.
         exports, bat_dis = _sim_hour_battery_grid_export_at_cap(
             span=span, dc_cap_per_q=discharge_dc_step, **common,
@@ -902,6 +903,7 @@ def plan_battery_grid_export(
     export_floor: float,
     min_hourly_kwh: float,
     export_window_start_hour: int = 16,
+    prev_export_end_min: int | None = None,
     skip_export_hours: set[int] | None = None,
     forecast: dict[str, Any] | None = None,
     cfg: dict[str, Any] | None = None,
@@ -915,9 +917,9 @@ def plan_battery_grid_export(
     Each start-hour→morning window is filled in clock order so a richer next
     evening cannot skip tonight. Seed the richest unrounded avg, then the
     2nd-rated hour (may skip a weaker trough), then grow by 5-groszy rating
-    (ties: closer to the run). A failed ≥-threshold edge closes that side
-    (do not seed a weaker island past it). Chrono fill sells leftover down to
-    survive-after-that-hour, so the right edge opens when the window end moves.
+    (ties: closer to the run). A failed ≥-threshold edge closes that side.
+    When SOC cannot cover the run, the last hour shortens from its end and
+    a cheaper hour after that tail is not filled in its place.
     """
     if steps <= 0:
         return list(base_controls)
@@ -1085,13 +1087,29 @@ def plan_battery_grid_export(
                 export_window_start_hour=export_window_start_hour,
                 cover_bound=cover_bound,
             )
+            prev = draft.get(h - 1)
+            if prev is not None:
+                prev_end = int(prev.hour) * 60 + int(prev.span[1]) * 15
+            else:
+                prev_end = prev_export_end_min
             claim = plan_hour_battery_grid_export_claim(
                 hour=h, role=roles[h], soc0=soc0, hold_soc_kwh=hold,
                 pv_q=pv_q, load_q=load_q, reserve_q=reserve_q, base_charge_q=charge_q,
                 rce_q=rce_q, hour_end_floor_kwh=hour_end_floor,
+                prev_export_end_min=prev_end,
                 **claim_kw,
             )
             if claim is None or claim.export_ac_kwh <= eps_step:
+                # An earlier hour that does not fit closes the cheap tail.
+                # Later hours of this run are not filled in its place.
+                if window_selected and int(h) + 1 == min(window_selected):
+                    floor_rating = float(ratings.get(int(h), 0.0))
+                    hi = max(window_selected)
+                    remaining = [
+                        x for x in remaining
+                        if int(x) <= hi
+                        or float(ratings.get(int(x), 0.0)) > floor_rating + 1e-12
+                    ]
                 remaining = trim_remaining_after_failed_export_edge(
                     remaining, selected=window_selected, failed_hour=h,
                     export_window_start_hour=export_window_start_hour,
@@ -1122,8 +1140,14 @@ def plan_battery_grid_export(
             if inputs is None:
                 continue
             soc0, pv_q, load_q, reserve_q, charge_q, rce_q, hour_end_floor = inputs
+            prev = filled.get(hour - 1)
+            if prev is not None:
+                prev_end = int(prev.hour) * 60 + int(prev.span[1]) * 15
+            else:
+                prev_end = prev_export_end_min
             claim = plan_hour_battery_grid_export_claim(
                 hour=hour, role=roles.get(hour, "single"), soc0=soc0,
+                prev_export_end_min=prev_end,
                 hold_soc_kwh=hold_soc_for_later_battery_grid_export_claims(
                     hold_from, from_hour=hour, eta_out=eta_out, ratings=ratings,
                     export_window_start_hour=export_window_start_hour,

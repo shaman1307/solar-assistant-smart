@@ -24,7 +24,7 @@ from .plan_q15 import (
     run_today_smart_q15_plan,
 )
 from .plan_timer_override import apply_plan_timer_overrides_if_any
-from .timer_plan import quarter_start_minute, sa_discharge_timer_for_hour
+from .timer_plan import parse_timer_schedule_segments, sa_discharge_timer_for_hour
 
 Q15_PER_HOUR = 4
 
@@ -89,6 +89,24 @@ def run_horizon_smart_plans(
     """Run the 15-min optimizer for today/tomorrow given the committed current hour."""
     smart_today: dict[str, Any] | None = None
     smart_tomorrow: dict[str, Any] | None = None
+    prev_export_end_min: int | None = None
+    if committed_hour is not None:
+        ends: list[int] = []
+        for seg in parse_timer_schedule_segments(
+            str(committed_hour.get("timer_schedule") or ""),
+        ):
+            if seg.get("kind") != "dis":
+                continue
+            hh_s, mm_s = str(seg["to"]).split(":")
+            ends.append(int(hh_s) * 60 + int(mm_s))
+        if ends:
+            prev_export_end_min = max(ends)
+    # Tomorrow's hour 0 is minute 0. An end at 23:45 is 15 minutes before that.
+    tomorrow_prev_end = None
+    if prev_export_end_min == 0:
+        tomorrow_prev_end = 0
+    elif prev_export_end_min is not None:
+        tomorrow_prev_end = prev_export_end_min - 24 * 60
 
     if committed_hour is not None and committed_end_soc is not None and plan_from_hour >= 23:
         # Hour 23 committed — only tomorrow is re-planned from this end SOC.
@@ -111,6 +129,7 @@ def run_horizon_smart_plans(
                 initial_soc_kwh=float(committed_end_soc),
                 from_hour=0,
                 front_load_skip_leading_slots=0,
+                prev_export_end_min=tomorrow_prev_end,
             )
     elif committed_hour is not None and committed_end_soc is not None:
         opt_from = plan_from_hour + 1
@@ -130,6 +149,7 @@ def run_horizon_smart_plans(
                 horizon_hours=opt_horizon,
                 front_load_skip_leading_slots=0,
                 skip_export_hours=skip_export_hours,
+                prev_export_end_min=prev_export_end_min,
             )
             smart_today = (rolling or {}).get("today")
             smart_tomorrow = (rolling or {}).get("tomorrow")
@@ -146,6 +166,7 @@ def run_horizon_smart_plans(
                 from_hour=opt_from,
                 front_load_skip_leading_slots=0,
                 skip_export_hours=skip_export_hours,
+                prev_export_end_min=prev_export_end_min,
             )
     elif need_tomorrow_hours > 0:
         rolling = run_rolling_smart_q15_plan(
@@ -319,10 +340,11 @@ def assemble_ea_plan_rows(
                 manual_timer_schedule=(
                     today_timer_ov[h] if h in today_timer_ov else None
                 ),
-                not_before_min=(
-                    quarter_start_minute(now) if h == plan_from_hour else None
-                ),
             )
+            # Current hour Timer Schedule is already committed. A 15-min tick
+            # plans timers only for later hours.
+            if h == plan_from_hour and h not in today_timer_ov:
+                row["timer_schedule"] = ""
             if h == plan_from_hour:
                 slots_now = (smart_today or {}).get("q15_by_hour", {}).get(h) or []
                 fpv_h = float(pv_merged[h]) if h < len(pv_merged) else 0.0

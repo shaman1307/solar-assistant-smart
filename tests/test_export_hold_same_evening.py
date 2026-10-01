@@ -13,19 +13,17 @@ from src.simulation_config import get_simulation_params
 
 
 def test_hold_ignores_later_cheaper_and_next_evening():
-    """Hold only richer hours in the same run, not tomorrow evening."""
-    # Tonight H19 + H20, tomorrow evening H44 (= next day H20)
+    """Hold only a richer later hour in the same run, not a cheaper tail."""
     claims = {
         20: BatteryGridExportHourClaim(20, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
+        21: BatteryGridExportHourClaim(21, (0, 4), (1.0, 1.0, 1.0, 1.0), 4.0),
         44: BatteryGridExportHourClaim(44, (0, 4), (2.0, 2.0, 2.0, 2.0), 8.0),
     }
     ratings = {19: 1.73, 20: 1.78, 21: 1.30, 44: 1.67}
-    # Claiming H19: hold for richer same-run H20 only (~8 kWh AC)
     hold = hold_soc_for_later_battery_grid_export_claims(
         claims, from_hour=19, eta_out=1.0, ratings=ratings,
     )
     assert abs(hold - 8.0) < 1e-6
-    # Claiming H20 (richest tonight): no hold for cheaper H44 next evening
     hold20 = hold_soc_for_later_battery_grid_export_claims(
         claims, from_hour=20, eta_out=1.0, ratings=ratings,
     )
@@ -250,6 +248,59 @@ def test_sale_windows_split_on_noon_gap():
 
     assert sale_windows([19, 20, 21, 41, 42]) == [[19, 20, 21], [41, 42]]
     assert sale_windows([19, 20, 23, 24, 41]) == [[19, 20, 23, 24], [41]]
+
+
+def test_short_soc_keeps_earlier_hour_and_cuts_the_tail():
+    """H18 stays. A cheaper H20 is shortened or dropped, not filled instead."""
+    cfg = _cfg(min_hourly_transfer_kwh=2.0)
+    get_simulation_params(cfg)
+    slots = 4
+    start_h = 18
+    hours = [18, 19, 20]
+    offset = start_h * slots
+    steps = len(hours) * slots
+    prices = {18: 1.1322, 19: 1.1562, 20: 0.9029}
+    rce: list[float | None] = [None] * (offset + steps)
+    for abs_h in hours:
+        for q in range(slots):
+            rce[abs_h * slots + q] = prices[abs_h]
+    base = [HourControl(0.0, 0.0, False) for _ in range(steps)]
+    controls = plan_battery_grid_export(
+        base,
+        steps=steps,
+        pv_series=[0.0] * steps,
+        load_series=[0.2] * steps,
+        rce_series=rce,
+        rce_step_offset=offset,
+        step_scale=0.25,
+        initial_soc_kwh=18.0,
+        battery_cap=48.0,
+        min_kwh=8.6,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=0.95,
+        eta_out=0.95,
+        eta_pv_load=0.95,
+        eta_pv_grid=0.95,
+        eta_pv_battery=0.95,
+        eps_step=0.01,
+        reserves=[8.6] * steps,
+        export_floor=0.5,
+        min_hourly_kwh=2.0,
+        export_window_start_hour=16,
+    )
+
+    def hour_export(abs_hour: int) -> float:
+        return sum(
+            controls[step].battery_export_kwh
+            for step in range(steps)
+            if (offset + step) // slots == abs_hour
+        )
+
+    exp18 = hour_export(18)
+    exp20 = hour_export(20)
+    assert exp18 >= 2.0, f"H18 export erased, got {exp18}"
+    assert exp20 <= exp18
 
 
 def test_trim_failed_next_evening_keeps_tonight():

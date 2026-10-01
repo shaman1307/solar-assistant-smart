@@ -68,8 +68,8 @@ def test_declining_rce_single_prefers_first_half_not_late_trim():
     assert claim.span != (2, 4)
 
 
-def test_rising_rce_single_prefers_rich_tail():
-    """Partial single-hour window should sit on the expensive late quarters."""
+def test_rising_rce_single_shortens_from_the_end():
+    """A short single-hour window starts at :00 and ends early."""
     rce_q = [1.27, 1.50, 1.77, 2.37]
     claim = plan_hour_battery_grid_export_claim(
         hour=19,
@@ -80,11 +80,8 @@ def test_rising_rce_single_prefers_rich_tail():
         **_claim_kwargs(min_hourly_kwh=2.0),
     )
     assert claim is not None
-    # Richer quarters are q2/q3; legal single spans ending late.
-    assert claim.span[0] >= 1 or claim.span == (0, 4)
-    if claim.span != (0, 4):
-        assert claim.span[1] == 4
-        assert claim.span[0] >= 1
+    assert claim.span[0] == 0
+    assert claim.span in ((0, 4), (0, 3), (0, 2))
 
 
 def test_last_role_still_must_start_at_hour_start():
@@ -156,3 +153,65 @@ def test_plan_declining_evening_hour_not_late_only_dis():
     # Must not be late-only Dis while early quarters idle.
     assert early > 0.5 or controls[0].battery_export_kwh > 0.05
     assert not (early <= 0.05 and late > 1.0)
+
+
+def _hour18_export(soc: float, prev_end_min: int | None) -> list[int]:
+    """Quarters of hour 18 with battery export, horizon starting at 18."""
+    hour = 18
+    offset = hour * 4
+    steps = 4
+    rce = [None] * offset + [0.9676, 1.0735, 1.1788, 1.3937]
+    base = [HourControl(0.0, 0.0, False) for _ in range(steps)]
+    controls = plan_battery_grid_export(
+        base,
+        steps=steps,
+        pv_series=[0.0] * steps,
+        load_series=[0.16] * steps,
+        rce_series=rce,
+        rce_step_offset=offset,
+        step_scale=0.25,
+        initial_soc_kwh=soc,
+        battery_cap=48.0,
+        min_kwh=8.64,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=0.95,
+        eta_out=0.95,
+        eta_pv_load=0.95,
+        eta_pv_grid=0.95,
+        eta_pv_battery=0.95,
+        eps_step=0.01,
+        reserves=[8.64] * steps,
+        export_floor=0.5,
+        min_hourly_kwh=2.0,
+        prev_export_end_min=prev_end_min,
+    )
+    return [i for i, c in enumerate(controls) if c.battery_export_kwh > 0.05]
+
+
+def _gap_ok(prev_end_min: int, hour: int, quarter: int) -> bool:
+    gap = hour * 60 + quarter * 15 - prev_end_min
+    return gap == 0 or gap >= 30
+
+
+def test_no_15_min_pause_after_committed_export():
+    """Dis ended at 18:00. The next hour starts at 18:00, not 18:15."""
+    lone = _hour18_export(14.0, None)
+    assert lone and lone[0] == 0
+    anchored = _hour18_export(14.0, 18 * 60)
+    assert anchored and anchored[0] == 0
+    assert _gap_ok(18 * 60, 18, anchored[0])
+
+
+def test_thin_soc_still_starts_at_hour_start():
+    """A short hour starts at :00 and ends early."""
+    quarters = _hour18_export(11.5, 18 * 60)
+    assert quarters
+    assert quarters[0] == 0
+    assert _gap_ok(18 * 60, 18, quarters[0])
+
+
+def test_end_at_45_does_not_resume_on_the_hour():
+    """Dis ended at 17:45. The next hour does not open 15 minutes later."""
+    quarters = _hour18_export(16.0, 17 * 60 + 45)
+    assert quarters == []

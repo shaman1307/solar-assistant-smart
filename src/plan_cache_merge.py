@@ -1079,9 +1079,17 @@ def _merge_current_hour_future_quarters(
     """
     fo, fq = freeze_ready_quarter_tick(now)
     from_q = (fq + 1) if (fo == 0 and fq >= 0) else 0
-    return _merge_hour_from_quarter(
+    merged = _merge_hour_from_quarter(
         existing_row, incoming_row, from_q=from_q, cfg=cfg,
     )
+    # Optimizer output must not replace the current hour's Timer Schedule.
+    if not incoming_row.get("timer_schedule_manual"):
+        merged["timer_schedule"] = existing_row.get("timer_schedule", "")
+        if existing_row.get("timer_schedule_manual"):
+            merged["timer_schedule_manual"] = True
+        if existing_row.get("hour_labels_locked"):
+            merged["hour_labels_locked"] = True
+    return merged
 
 
 def _in_progress_quarter(now: datetime) -> int:

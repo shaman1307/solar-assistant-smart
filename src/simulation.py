@@ -610,8 +610,9 @@ def build_energy_arbitrage_plan(
     )
 
 
+    # Timer schedule covers hours after the current one.
     schedule_from = (
-        now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+        now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         if actual_step0 else start_dt
     )
     q15_schedule_rows = collect_q15_schedule_rows(

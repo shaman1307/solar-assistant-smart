@@ -556,10 +556,9 @@ def test_export_window_roles_and_spans():
     assert export_window_roles({5}) == {5: "single"}
     assert export_window_roles({5, 6, 7}) == {5: "first", 6: "middle", 7: "last"}
     assert export_span_candidates("middle") == [(0, 4)]
-    assert export_span_candidates("first")[0] == (0, 4)
+    assert export_span_candidates("first") == [(0, 4)]
     assert export_span_candidates("last") == [(0, 4), (0, 3), (0, 2)]
-    # Single: longest first includes full hour
-    assert export_span_candidates("single")[0] == (0, 4)
+    assert export_span_candidates("single") == [(0, 4), (0, 3), (0, 2)]
 
 
 def test_richer_hour_gets_export_before_cheaper():

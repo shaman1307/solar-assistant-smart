@@ -309,6 +309,7 @@ def run_day_smart_q15_plan(
     from_hour: int = 0,
     front_load_skip_leading_slots: int | None = None,
     skip_export_hours: set[int] | None = None,
+    prev_export_end_min: int | None = None,
 ) -> dict[str, Any] | None:
     """15-min optimizer replay from *from_hour* through end of day (shared by debug and PROD).
 
@@ -392,6 +393,7 @@ def run_day_smart_q15_plan(
         rce_step_offset=start_step,
         front_load_skip_leading_slots=front_load_skip_leading_slots,
         skip_export_hours=skip_export_hours,
+        prev_export_end_min=prev_export_end_min,
     )
 
     from .plan_optimizer import build_extended_buy_for_reserve, build_extended_pv_load_for_reserve
@@ -480,6 +482,7 @@ def run_rolling_smart_q15_plan(
     horizon_hours: int = 24,
     front_load_skip_leading_slots: int | None = None,
     skip_export_hours: set[int] | None = None,
+    prev_export_end_min: int | None = None,
 ) -> dict[str, Any] | None:
     """One continuous optimize across midnight for the rolling plan window.
 
@@ -527,6 +530,7 @@ def run_rolling_smart_q15_plan(
                 from_hour=from_hour,
                 front_load_skip_leading_slots=front_load_skip_leading_slots,
                 skip_export_hours=skip_export_hours,
+                prev_export_end_min=prev_export_end_min,
             ),
             "tomorrow": None,
         }
@@ -607,6 +611,7 @@ def run_rolling_smart_q15_plan(
         rce_step_offset=start_step,
         front_load_skip_leading_slots=front_load_skip_leading_slots,
         skip_export_hours=skip_export_hours,
+        prev_export_end_min=prev_export_end_min,
     )
 
     from .plan_optimizer import (
@@ -1131,14 +1136,16 @@ def apply_smart_plan_for_day(
         row["smart"] = smart_by_hour.get(hi)
         slots = q15_by_hour.get(hi) or []
         smart = smart_by_hour.get(hi) or {}
-        row["timer_schedule"] = build_hour_timer_schedule(
-            hi,
-            slots,
-            cfg,
-            epsilon=epsilon,
-            action=action_by_hour.get(hi, ""),
-            grid_export=float(smart.get("grid_export") or 0),
-        )
+        # A 15-min tick plans Timer Schedule only for hours after the current one.
+        if plan_from_hour is None or hi > int(plan_from_hour):
+            row["timer_schedule"] = build_hour_timer_schedule(
+                hi,
+                slots,
+                cfg,
+                epsilon=epsilon,
+                action=action_by_hour.get(hi, ""),
+                grid_export=float(smart.get("grid_export") or 0),
+            )
         row["rce_q15"] = rce_q15_by_hour.get(hi, [None] * Q15_PER_HOUR)
 
     day["smart_end_soc_kwh"] = plan["end_soc_kwh"]
