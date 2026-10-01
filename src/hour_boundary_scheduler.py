@@ -22,6 +22,7 @@ from .config import load_config
 from .influxdb import now_warsaw
 from .sqlite_store import read_plan
 from .timer_plan import (
+    _slot_covers_minute,
     build_sa_schedule_from_hour_row,
     hour_has_timer_schedule,
     timer_charge_active_at,
@@ -99,7 +100,9 @@ def _sa_missing_active_plan_timer(
     if timer_discharge_active_at(timer_txt, now):
         if not rules.get("timed_discharge_enabled"):
             return True
-        return not _slot_covers((rules.get("discharge_slots") or [{}])[0])
+        return not any(
+            _slot_covers(slot) for slot in (rules.get("discharge_slots") or [])
+        )
     return False
 
 
@@ -120,6 +123,15 @@ async def _clear_stale_timed_charge(
         status["ok"] = True
         status["skipped"] = True
         status["skip_reason"] = "timed_charge_already_off"
+        return status
+    now_min = now_warsaw().hour * 60 + now_warsaw().minute
+    if any(
+        _slot_covers_minute(slot, now_min)
+        for slot in (rules.get("charge_slots") or [])
+    ):
+        status["ok"] = True
+        status["skipped"] = True
+        status["skip_reason"] = "charge_window_in_progress"
         return status
     ok = await sa_client.set_timed_power_flags(
         cfg,

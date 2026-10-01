@@ -1039,17 +1039,27 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
 
 
 async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bool:
-    """Auto-sync: write slot 1 for enabled timed charge and/or discharge only."""
+    """Auto-sync: charge writes slot 1. Discharge writes the slots that differ."""
+    write_dis = schedule.get("discharge_slots_to_write")
+    skip_flags = bool(schedule.get("skip_timer_flags"))
     slim: dict[str, Any] = {
-        "timed_charge_enabled": bool(schedule.get("timed_charge_enabled")),
-        "timed_discharge_enabled": bool(schedule.get("timed_discharge_enabled")),
+        "timed_charge_enabled": None if skip_flags else bool(schedule.get("timed_charge_enabled")),
+        "timed_discharge_enabled": None if skip_flags else bool(schedule.get("timed_discharge_enabled")),
         "charge_slots": [],
         "discharge_slots": [],
     }
-    if slim["timed_charge_enabled"]:
+    if schedule.get("timed_charge_enabled"):
         slim["charge_slots"] = [schedule.get("charge_slots", [{}])[0]]
-    if slim["timed_discharge_enabled"]:
+    if write_dis is not None:
+        slim["discharge_slots"] = list(write_dis)
+    elif schedule.get("timed_discharge_enabled"):
         slim["discharge_slots"] = [schedule.get("discharge_slots", [{}])[0]]
+    if write_dis is not None and not write_dis and not slim["charge_slots"]:
+        log.info(
+            "Hourly discharge slots unchanged — hour=%s",
+            schedule.get("target_hour"),
+        )
+        return True
     if not slim["charge_slots"] and not slim["discharge_slots"]:
         # No active slots — still assert Grid charge off when Timed charge is off.
         if not slim["timed_charge_enabled"]:
@@ -1061,11 +1071,12 @@ async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bo
     ok = await set_timer_schedule(cfg, slim)
     if ok:
         log.info(
-            "Hourly schedule applied — hour=%s action=%s charge=%s discharge=%s (slot 1)",
+            "Hourly schedule applied — hour=%s action=%s charge=%s discharge=%s slots=%s",
             schedule.get("target_hour"),
             schedule.get("planned_action"),
             schedule.get("timed_charge_enabled"),
             schedule.get("timed_discharge_enabled"),
+            [s.get("slot") for s in slim["discharge_slots"]],
         )
     return ok
 

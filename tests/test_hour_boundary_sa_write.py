@@ -170,6 +170,30 @@ def test_sync_timer_clears_stale_timed_charge_when_empty():
     assert kwargs["timed_charge_enabled"] is False
 
 
+def test_empty_hour_leaves_current_discharge_window():
+    """Hour 21 has no plan timer. The slot that already covers 21:00 stays."""
+    rows = _plan_with_timer(21, "")["rows"]
+    rules = {
+        "timed_charge_enabled": False,
+        "timed_discharge_enabled": True,
+        "discharge_slots": [
+            {"slot": 1, "from": "19:00", "to": "20:00", "capacity_pct": 47, "power_kw": 8.0, "voltage_v": 42.0},
+            {"slot": 2, "from": "20:00", "to": "21:00", "capacity_pct": 44, "power_kw": 8.0, "voltage_v": 42.0},
+            {"slot": 3, "from": "21:00", "to": "22:00", "capacity_pct": 40, "power_kw": 8.0, "voltage_v": 42.0},
+        ],
+    }
+    apply_mock = AsyncMock(return_value=True)
+    with (
+        patch.object(hbs.sa_client, "get_rules", AsyncMock(return_value=rules)),
+        patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", apply_mock),
+    ):
+        status = asyncio.run(hbs._sync_timer_from_hour_row(_cfg(), rows, 21))
+
+    assert status["ok"] is True
+    assert status["skip_reason"] == "empty_timer_schedule"
+    apply_mock.assert_not_awaited()
+
+
 def test_sync_timer_writes_plan_start_without_shift():
     """Late :00 job still writes Chg 02:00-02:30 — no clip to :15 or next minute."""
     rows = _plan_with_timer(
