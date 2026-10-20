@@ -92,6 +92,8 @@ def plan_battery_grid_charge(
 
     Pack at hardware max in the last offpeak clock hour before peak, spilling
     into earlier offpeak hours only if the last hour cannot hold the budget.
+    A partial earlier hour is packed at the end of that hour so the charge
+    block stays contiguous up to the peak.
 
     Drop the budget when it is below ``min_hourly_kwh`` and forcing a min block
     would cost more than buying the same house energy at peak.
@@ -211,10 +213,16 @@ def plan_battery_grid_charge(
         if buy_p > offpeak_buy + eps_step:
             continue
         hour_steps.setdefault(step // slots_per_hour, []).append(step)
-    for hour in sorted(hour_steps.keys(), reverse=True):
+    hours_desc = sorted(hour_steps.keys(), reverse=True)
+    for hour_i, hour in enumerate(hours_desc):
         if budget_left <= eps_step:
             break
-        for step in hour_steps[hour]:
+        steps = hour_steps[hour]
+        # The hour nearest the peak keeps a short block at :00. Earlier hours
+        # fill from :45 backward so the leftover meets the next charge hour.
+        if hour_i > 0:
+            steps = list(reversed(steps))
+        for step in steps:
             if budget_left <= eps_step:
                 break
             chunk = min(step_ac, charge_ac_step, budget_left)

@@ -157,6 +157,46 @@ def test_infer_charge_power_needed_above_floor():
     assert infer_charge_timer_power_kw(2.5, 30, cfg) == 5.0
 
 
+def test_spill_partial_hour_abuts_the_next_charge_block():
+    """9 kWh at 1.5 kWh/q15: full hour before peak plus the last 30 min of the hour before that."""
+    min_kwh = 7.68
+    step_max = 1.5
+    controls = [HourControl(0.0, 0.0, False) for _ in range(16)]
+    controls[4] = HourControl(4.5, 0.0, False)
+    controls[5] = HourControl(4.5, 0.0, False)
+    buy = [OFF] * 12 + [PEAK] * 4
+    out = plan_battery_grid_charge(
+        controls,
+        pv_series=[0.0] * 16,
+        load_series=[0.05] * 16,
+        buy_prices=buy,
+        offpeak_buy=OFF,
+        charge_targets=[0.0] * 16,
+        initial_soc_kwh=min_kwh + 2.0,
+        battery_cap=48.0,
+        min_kwh=min_kwh,
+        charge_ac_step=step_max,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=1.0,
+        eta_out=1.0,
+        eta_pv_load=1.0,
+        eta_pv_grid=1.0,
+        eta_pv_battery=1.0,
+        eps_step=0.001,
+        reserves=[min_kwh] * 16,
+        step_scale=0.25,
+        skip_leading_slots=4,
+        min_block_minutes=30,
+    )
+    earlier = [out[i].grid_charge_kw for i in range(4, 8)]
+    last = [out[i].grid_charge_kw for i in range(8, 12)]
+    assert earlier == [0.0, 0.0, step_max, step_max]
+    assert last == [step_max, step_max, step_max, step_max]
+    charged = [i for i, c in enumerate(out) if c.grid_charge_kw > 0.001]
+    assert charged == list(range(charged[0], charged[-1] + 1))
+
+
 def test_prepeak_pack_uses_hour_before_peak_not_earliest():
     """Two future offpeak hours: 4 kWh packs in the hour before peak, not hour 01."""
     min_kwh = 7.68
