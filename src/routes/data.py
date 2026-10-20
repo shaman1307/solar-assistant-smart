@@ -26,7 +26,6 @@ from ..sqlite_store import (
     read_cached_deposit_total,
     read_plan,
     read_plan_buy_tariff,
-    read_plan_rce,
     save_month_history,
 )
 from ..plan_simulation import (
@@ -156,10 +155,7 @@ async def api_forecast() -> dict[str, Any]:
 
 @router.get("/api/rce")
 async def api_rce() -> dict[str, Any]:
-    """Return hourly RCE prices for today and tomorrow from PSE."""
-    stored_rce = read_plan_rce()
-    if stored_rce is not None:
-        return rce_mod.prepare_rce_payload(dict(stored_rce))
+    """Chart RCE from the same stored quarters the optimizer uses."""
     return await rce_mod.get_rce_prices()
 
 
