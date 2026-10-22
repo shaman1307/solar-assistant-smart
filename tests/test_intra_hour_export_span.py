@@ -68,8 +68,8 @@ def test_declining_rce_single_prefers_first_half_not_late_trim():
     assert claim.span != (2, 4)
 
 
-def test_rising_rce_single_shortens_from_the_end():
-    """A short single-hour window starts at :00 and ends early."""
+def test_rising_rce_single_takes_the_expensive_tail():
+    """A short hour with rising RCE sits on the later quarters."""
     rce_q = [1.27, 1.50, 1.77, 2.37]
     claim = plan_hour_battery_grid_export_claim(
         hour=19,
@@ -80,13 +80,13 @@ def test_rising_rce_single_shortens_from_the_end():
         **_claim_kwargs(min_hourly_kwh=2.0),
     )
     assert claim is not None
-    assert claim.span[0] == 0
-    assert claim.span in ((0, 4), (0, 3), (0, 2))
+    assert claim.span[1] == 4, f"expensive tail must end at :00, got {claim.span}"
+    assert claim.span[0] >= 1
 
 
-def test_last_role_still_must_start_at_hour_start():
-    """Multi-hour continuity: last hour of a run cannot start mid-hour."""
-    assert export_span_candidates("last") == [(0, 4), (0, 3), (0, 2)]
+def test_last_role_takes_the_expensive_tail():
+    """The last hour of a run also keeps the richer edge."""
+    assert export_span_candidates("last") == [(0, 4), (1, 4), (0, 3), (2, 4), (0, 2)]
     rce_q = [1.27, 1.50, 1.77, 2.37]
     claim = plan_hour_battery_grid_export_claim(
         hour=21,
@@ -97,7 +97,46 @@ def test_last_role_still_must_start_at_hour_start():
         **_claim_kwargs(),
     )
     assert claim is not None
-    assert claim.span[0] == 0, f"last role must start :00, got {claim.span}"
+    assert claim.span[1] == 4, f"last role tail must end at :00, got {claim.span}"
+    assert claim.span[0] >= 1
+
+
+def test_partial_hour_before_middle_keeps_the_expensive_half():
+    """16:30 and 16:45 are richer than 16:00 and 16:15, and they abut 17:00."""
+    rce_q = [0.8143, 0.9838, 1.1614, 1.281]
+    claim = plan_hour_battery_grid_export_claim(
+        hour=16,
+        role="first",
+        soc0=11.5,
+        pv_q=[0.0, 0.0, 0.0, 0.0],
+        rce_q=rce_q,
+        next_export_start_min=17 * 60,
+        **_claim_kwargs(min_hourly_kwh=2.0),
+    )
+    assert claim is not None
+    assert claim.span == (2, 4), claim.span
+    end_min = 16 * 60 + claim.span[1] * 15
+    gap = 17 * 60 - end_min
+    assert gap == 0 or gap >= 30
+
+
+def test_forty_five_before_next_hour_cannot_leave_a_15_min_gap():
+    """A :00-:45 block before a middle hour at :00 is a 15-minute gap."""
+    rce_q = [2.0, 1.9, 1.8, 0.4]
+    claim = plan_hour_battery_grid_export_claim(
+        hour=16,
+        role="first",
+        soc0=14.0,
+        pv_q=[0.0, 0.0, 0.0, 0.0],
+        rce_q=rce_q,
+        next_export_start_min=17 * 60,
+        **_claim_kwargs(min_hourly_kwh=2.0),
+    )
+    assert claim is not None
+    assert claim.span != (0, 3)
+    end_min = 16 * 60 + claim.span[1] * 15
+    gap = 17 * 60 - end_min
+    assert gap == 0 or gap >= 30
 
 
 def test_middle_role_still_full_hour_only():
@@ -195,23 +234,26 @@ def _gap_ok(prev_end_min: int, hour: int, quarter: int) -> bool:
 
 
 def test_no_15_min_pause_after_committed_export():
-    """Dis ended at 18:00. The next hour starts at 18:00, not 18:15."""
+    """Dis ended at 18:00. The next hour does not start 15 minutes later."""
     lone = _hour18_export(14.0, None)
-    assert lone and lone[0] == 0
+    assert lone
     anchored = _hour18_export(14.0, 18 * 60)
-    assert anchored and anchored[0] == 0
+    assert anchored
+    assert anchored[0] != 1
     assert _gap_ok(18 * 60, 18, anchored[0])
 
 
-def test_thin_soc_still_starts_at_hour_start():
-    """A short hour starts at :00 and ends early."""
+def test_thin_soc_rising_rce_takes_the_later_half():
+    """Prev Dis ended at 18:00. Rising RCE keeps 18:30-19:00 (gap 30), not 18:15."""
     quarters = _hour18_export(11.5, 18 * 60)
     assert quarters
-    assert quarters[0] == 0
+    assert quarters[0] >= 2
     assert _gap_ok(18 * 60, 18, quarters[0])
 
 
 def test_end_at_45_does_not_resume_on_the_hour():
-    """Dis ended at 17:45. The next hour does not open 15 minutes later."""
+    """Dis ended at 17:45. The next hour does not open at 18:00 (15-minute gap)."""
     quarters = _hour18_export(16.0, 17 * 60 + 45)
-    assert quarters == []
+    assert quarters
+    assert quarters[0] != 0
+    assert _gap_ok(17 * 60 + 45, 18, quarters[0])

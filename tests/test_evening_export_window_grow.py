@@ -106,7 +106,7 @@ def test_skip_below_threshold_may_take_hour_beyond():
     )
     assert export[20] >= 2.0
     assert export[21] < 0.5
-    assert export[22] >= 1.5
+    assert export[22] >= 0.5, f"H22 above the floor must still export, got {export}"
 
 
 def test_soc_closed_right_edge_does_not_seed_weaker_island():
@@ -167,8 +167,8 @@ def test_second_rated_distant_peak_opens_before_adjacent_trough():
     assert export[22] >= 2.0, f"2nd-rated H22 must island, got {export}"
 
 
-def test_partial_right_edge_starts_at_hour_start():
-    """Right-edge 30/45 min Dis starts at :00, not a tail."""
+def test_partial_right_edge_does_not_open_15_min_after_previous():
+    """A following hour does not start 15 minutes after the previous Dis end."""
     export, qmask = _export_plan(
         rce_by_hour={20: 1.19, 21: 0.90, 22: 0.40, 23: 0.40},
         reserves_by_hour={20: 16.0, 21: 14.0, 22: 12.0, 23: 11.0},
@@ -179,12 +179,15 @@ def test_partial_right_edge_starts_at_hour_start():
     )
     assert export[20] >= 2.0
     if export[21] >= 2.0:
-        assert qmask[21].startswith("1"), f"right edge must start :00, got {qmask[21]}"
-        assert qmask[21] in ("1100", "1110", "1111"), qmask[21]
+        assert qmask[21] in ("1100", "0111", "0011", "1110", "1111"), qmask[21]
+        prev_end_q = qmask[20].rfind("1")
+        start_q = qmask[21].find("1")
+        gap_min = (60 - (prev_end_q + 1) * 15) + start_q * 15
+        assert gap_min == 0 or gap_min >= 30, (qmask[20], qmask[21], gap_min)
 
 
-def test_partial_left_edge_flush_to_block():
-    """Left-edge 30/45 min Dis ends at the next hour, not :00–:30."""
+def test_partial_left_edge_equal_prices_start_at_hour_start():
+    """Equal quarter prices keep the earlier edge. A 30-minute pause is legal."""
     export, qmask = _export_plan(
         rce_by_hour={19: 1.05, 20: 1.20, 21: 0.70, 22: 0.40},
         reserves_by_hour={19: 18.0, 20: 16.0, 21: 14.0, 22: 12.0},
@@ -194,5 +197,7 @@ def test_partial_left_edge_flush_to_block():
     )
     assert export[20] >= 2.0
     if 2.0 <= export[19] < 6.0:
-        assert qmask[19].endswith("1"), f"left edge must flush to :00, got {qmask[19]}"
-        assert qmask[19] in ("0011", "0111", "1111"), qmask[19]
+        # Equal prices: the earlier edge of the same length wins. A 45-minute
+        # block before the next hour is :15–:00, because :00–:45 leaves 15 minutes.
+        assert qmask[19] in ("1100", "0111", "1110", "1111"), qmask[19]
+        assert qmask[19] != "0011"
