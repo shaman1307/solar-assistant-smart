@@ -23,6 +23,7 @@ from ..plan_monthly_refresh import (
 from ..sqlite_store import (
     load_all_deposits,
     load_month_history,
+    load_plan_day_archive,
     read_cached_deposit_total,
     read_plan,
     read_plan_buy_tariff,
@@ -154,8 +155,19 @@ async def api_forecast() -> dict[str, Any]:
 
 
 @router.post("/api/forecast/recompute-pv")
-async def api_forecast_recompute_pv() -> dict[str, Any]:
-    """Rebuild today/tomorrow PV from the last cached Open-Meteo radiation."""
+async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
+    """Rebuild today/tomorrow PV from the last cached Open-Meteo radiation.
+
+    For a past ``date``, return PV q15 from that day's stored radiation and the
+    current config without writing the archive or the day cache.
+    """
+    if date and date < now_warsaw().strftime("%Y-%m-%d"):
+        archived = (load_plan_day_archive(date) or {}).get("forecast") or {}
+        radiation = archived.get("pv_radiation") or (fc.day_forecast_snapshot(date) or {}).get("pv_radiation")
+        if not radiation:
+            return {"ok": False, "date": date, "error": "no stored radiation for this day"}
+        q15 = await asyncio.to_thread(forecast_mod.pv_q15_from_radiation, load_config(), radiation, date)
+        return {"ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2)}
     cache = await forecast_mod.recompute_pv_from_cached_radiation(load_config())
     days = cache.get("days") or {}
     return {

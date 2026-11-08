@@ -3783,9 +3783,9 @@ function socToY(soc, minP, maxP) {
 }
 
 /** SOC q15 for Power Management chart — today from EA row.q15 slots (not flat hourly). */
-function planSocQ15FromEaRows(simData, dayKey) {
-  if (!simData || dayKey !== 'today') return null;
-  const dateStr = simData.today_date;
+/** One q15 field (soc, production, consumption) of EA rows on simData.today_date, or null. */
+function eaRowsQ15Field(simData, field) {
+  const dateStr = simData?.today_date;
   if (!dateStr) return null;
   const slots = new Array(CHART_SLOTS_Q15).fill(null);
   let found = false;
@@ -3797,13 +3797,38 @@ function planSocQ15FromEaRows(simData, dayKey) {
       const qi = Number(q.quarter);
       if (!Number.isFinite(qi) || qi < 0 || qi > 3) continue;
       const idx = h * 4 + qi;
-      if (q.soc != null && idx >= 0 && idx < slots.length) {
-        slots[idx] = Number(q.soc);
+      if (q[field] != null && idx >= 0 && idx < slots.length) {
+        slots[idx] = Number(q[field]);
         found = true;
       }
     }
   }
-  return found ? clipSocQ15ToNow(slots, simData) : null;
+  return found ? slots : null;
+}
+
+function planSocQ15FromEaRows(simData, dayKey) {
+  if (!simData || dayKey !== 'today') return null;
+  const slots = eaRowsQ15Field(simData, 'soc');
+  return slots ? clipSocQ15ToNow(slots, simData) : null;
+}
+
+/** PV recomputed by Refresh for a past day: { date, q15 }. Not persisted. */
+let pastPvRecalc = null;
+
+/** Archived forecast + actuals for the Energy arbitrage past day, or null on today. */
+function pastForecastView() {
+  if (simViewIsToday() || !simData?.history_view) return null;
+  const date = simData.today_date;
+  const fc = simData.forecast || {};
+  const pvQ15 = pastPvRecalc?.date === date ? pastPvRecalc.q15 : fc.pv_q15;
+  return {
+    date,
+    day: { pv_forecast_q15: pvQ15 || [], load_q15: fc.load_q15 || [] },
+    planSoc: simData.plan_soc_q15?.today || [],
+    pvActual: q15ToChartKw(eaRowsQ15Field(simData, 'production') || [], false),
+    loadActual: q15ToChartKw(eaRowsQ15Field(simData, 'consumption') || [], false),
+    socActual: eaRowsQ15Field(simData, 'soc') || [],
+  };
 }
 
 /** Clip series to the current Warsaw quarter (from sim computed_at when available). */
@@ -4336,6 +4361,7 @@ async function loadSimulationForDate(dateStr, options = {}) {
   const date = dateStr || DEBUG_TODAY;
   const el = document.getElementById('sim-date');
   if (el && el.value !== date) el.value = date;
+  pastPvRecalc = null;
   const bodyTotal = document.getElementById('sim-body-total');
   if (bodyTotal) {
     bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>`;
@@ -4354,7 +4380,7 @@ async function loadSimulationForDate(dateStr, options = {}) {
       if (planBody) planBody.classList.remove('hidden');
     }
     renderSimulationBundle(simData);
-    if (date === DEBUG_TODAY && forecastData) renderForecast();
+    if (forecastData) renderForecast();
   } catch (e) {
     if (bodyTotal) {
       bodyTotal.innerHTML = `<tr><td colspan="${SIM_TABLE_COLS}" class="px-3 py-6 text-center text-red-500">Failed to load simulation.</td></tr>`;
@@ -4553,9 +4579,11 @@ function showForecastDay(day) {
 
 function renderForecast() {
   if (!forecastData) return;
-  const day = forecastData[currentForecastDay];
+  const past = pastForecastView();
+  const day = past ? past.day : forecastData[currentForecastDay];
   if (!day) return;
-  const isToday = currentForecastDay === 'today';
+  const isToday = !past && currentForecastDay === 'today';
+  const showActual = isToday || !!past;
   const slotCount = CHART_SLOTS_Q15;
 
   // Forecast chart: native Open-Meteo q15 PV (pv_forecast_q15), no hourly interpolation.
@@ -4564,19 +4592,22 @@ function renderForecast() {
 
   let pvActualKw = null;
   let loadActualKw = null;
-  if (isToday) {
+  if (past) {
+    pvActualKw = past.pvActual;
+    loadActualKw = past.loadActual;
+  } else if (isToday) {
     pvActualKw = actualPvQ15ToKw(forecastData, day);
     loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
-  const planSocQ15 = (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
+  const planSocQ15 = past ? past.planSoc : (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
     ? simData.plan_soc_q15[currentForecastDay]
     : null) || (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
     ? forecastData.plan_soc_q15[currentForecastDay]
     : null) || [];
 
   // Actual SOC from EA rows (today only) — dashed; plan is solid optimizer trajectory.
-  let actualSocQ15 = [];
+  let actualSocQ15 = past ? past.socActual : [];
   if (isToday) {
     actualSocQ15 = (simData?.actual_soc_q15?.today?.some(v => v != null)
       ? simData.actual_soc_q15.today
@@ -4614,11 +4645,11 @@ function renderForecast() {
   const socLine        = document.getElementById('fc-soc-line');
   const socLineActual  = document.getElementById('fc-soc-line-actual');
   if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecastKw, slotCount, fcToY));
-  if (pvLineActual) pvLineActual.setAttribute('points',   isToday && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
+  if (pvLineActual) pvLineActual.setAttribute('points',   showActual && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
   if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecastKw, slotCount, fcToY));
-  if (lineActual)   lineActual.setAttribute('points',     isToday && loadActualKw ? dashLinePts(loadActualKw, slotCount, fcToY) : '');
+  if (lineActual)   lineActual.setAttribute('points',     showActual && loadActualKw ? dashLinePts(loadActualKw, slotCount, fcToY) : '');
   if (socLine)      socLine.setAttribute('points',       dashLinePts(planSocQ15, slotCount, fcSocToY));
-  if (socLineActual) socLineActual.setAttribute('points', isToday && actualSocQ15.length
+  if (socLineActual) socLineActual.setAttribute('points', showActual && actualSocQ15.length
     ? dashLinePts(actualSocQ15, slotCount, fcSocToY) : '');
 
   // SOC ≥ 90% bands follow the plan trajectory, not actual SOC.
@@ -4641,7 +4672,7 @@ function renderForecast() {
 
   const fcWrap = document.getElementById('fc-chart-wrap');
   const fcTip = document.getElementById('fc-chart-tooltip');
-  const fcDate = isToday
+  const fcDate = past ? past.date : isToday
     ? new Date().toISOString().slice(0, 10)
     : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   bindDashChartHover(fcAEl, fcTip, fcWrap, (slot) => {
@@ -4649,11 +4680,11 @@ function renderForecast() {
     const show = (key) => !hidden || !hidden.has(key);
     let html = '';
     if (show('pv-forecast') && pvForecastKw[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecastKw[slot]));
-    if (show('pv-actual') && isToday && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
+    if (show('pv-actual') && showActual && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
     if (show('load-forecast') && loadForecastKw[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecastKw[slot]));
-    if (show('load-actual') && isToday && loadActualKw?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActualKw[slot]));
+    if (show('load-actual') && showActual && loadActualKw?.[slot] != null) html += tooltipRowLine('#93c5fd', true, SA_LABELS.loadActual, fmtChartK(loadActualKw[slot]));
     if (show('soc-plan') && planSocQ15[slot] != null) html += tooltipRowLine('#a855f7', false, SA_LABELS.socPlan, fmtChartSoc(planSocQ15[slot]));
-    if (show('soc-actual') && isToday && actualSocQ15[slot] != null) html += tooltipRowLine('#c084fc', true, SA_LABELS.socActual, fmtChartSoc(actualSocQ15[slot]));
+    if (show('soc-actual') && showActual && actualSocQ15[slot] != null) html += tooltipRowLine('#c084fc', true, SA_LABELS.socActual, fmtChartSoc(actualSocQ15[slot]));
     if (!html) return '';
     return `<div class="tt-time">${chartSlotTitleQ15(slot, fcDate)}</div>${html}`;
   }, slotCount);
@@ -5238,6 +5269,15 @@ async function refreshForecastOverridesPlan() {
     btn.textContent = 'Refreshing…';
   }
   try {
+    if (!simViewIsToday()) {
+      const date = document.getElementById('sim-date')?.value;
+      const res = await fetch('api/forecast/recompute-pv?date=' + encodeURIComponent(date), { method: 'POST' });
+      const body = await res.json();
+      if (body?.ok) pastPvRecalc = { date, q15: body.pv_forecast_q15 };
+      else console.warn('past-day PV recompute', body?.error);
+      renderForecast();
+      return;
+    }
     clearAllOverrideReverts();
     const dirty = OV_METRICS.some(({ id }) => {
       const el = document.getElementById('ov-ctrl-' + id);

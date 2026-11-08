@@ -251,6 +251,20 @@ def compute_pv_hourly_for_date(date_str: str, cfg: dict) -> list[float]:
     return hourly
 
 
+def day_forecast_snapshot(date_str: str) -> dict[str, Any] | None:
+    """Effective PV/load q15 forecast and PV radiation of a cached day, or None."""
+    day = (load_day_cache().get("days") or {}).get(date_str)
+    if not day:
+        return None
+    pv = day.get("pv") or {}
+    load = day.get("load") or {}
+    return {
+        "pv_q15": list(pv.get("effective_q15") or []),
+        "load_q15": list(load.get("effective_q15") or []),
+        "pv_radiation": pv.get("radiation"),
+    }
+
+
 def recompute_pv_from_cached_radiation(cfg: dict, dates: list[str]) -> dict[str, Any]:
     """Rebuild PV for cached days from their last stored Open-Meteo radiation."""
     from .forecast import pv_q15_from_radiation

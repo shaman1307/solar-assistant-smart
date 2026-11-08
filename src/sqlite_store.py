@@ -456,6 +456,8 @@ def _archive_plan_day_locked(
     compute_plan_totals,
 ) -> None:
     """Persist one completed EA day (must hold ``_lock`` / open ``conn``)."""
+    from .forecast_cache import day_forecast_snapshot
+
     hist = [
         r for r in (plan.get("history_rows") or [])
         if str(r.get("plan_date") or "") == day
@@ -481,6 +483,8 @@ def _archive_plan_day_locked(
         "has_history_rows": True,
         "history_view": True,
         "history_source": "archive",
+        "forecast": day_forecast_snapshot(day),
+        "plan_soc_q15": {"today": list((plan.get("plan_soc_q15") or {}).get("today") or [])},
     }
     payload = json.dumps(archive, ensure_ascii=False, separators=(",", ":"))
     conn.execute(
