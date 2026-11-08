@@ -222,7 +222,7 @@ def test_derive_timer_schedule_q15_half_discharge_power():
 
 
 def test_charge_timer_uses_needed_power_not_always_max():
-    """Bat +2.5 kWh in 30 min → ~5 kW (min hourly 2 → floor 4 kW), not 6."""
+    """Rise 18.4% → cap 24% of 48 kWh (2.69 kWh) in 30 min → 5.5 kW, not max 6."""
     cfg = {
         "inverter": {"ac_capacity_kw": 8.0},
         "battery": {
@@ -271,7 +271,7 @@ def test_charge_timer_uses_needed_power_not_always_max():
         3, slots, cfg, action=ACTION_CHARGE_GRID,
     )
     assert "03:00-03:30" in txt
-    assert "5.0kW" in txt
+    assert "5.5kW" in txt
     assert "6.0kW" not in txt
 
 

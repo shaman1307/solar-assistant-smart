@@ -175,7 +175,10 @@ def test_front_load_keeps_economic_budget_dense_in_one_hour():
 
 
 def test_front_load_never_starts_chg_in_skipped_current_hour():
-    """skip_leading_slots keeps the in-progress hour free of relocated Chg."""
-    out = _front_load([(0, 2.0), (1, 2.0)], skip=4)
+    """skip_leading_slots keeps the in-progress hour free of Chg.
+
+    DP volume in the skipped hour is not counted; the budget after it packs in H01.
+    """
+    out = _front_load([(0, 2.0), (1, 2.0), (6, 2.0), (7, 2.0)], skip=4)
     assert all(out[i].grid_charge_kw == 0.0 for i in range(4))
     assert sum(out[i].grid_charge_kw for i in range(4, 8)) == pytest.approx(4.0)
