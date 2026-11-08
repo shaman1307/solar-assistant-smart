@@ -433,6 +433,24 @@ def _solar_position(lat_deg: float, lon_deg: float, when_utc: datetime) -> tuple
     return altitude, az
 
 
+def sun_path(cfg: dict, date_str: str, step_min: int = 5) -> list[dict[str, Any]]:
+    """Sun above the horizon on a Warsaw day: local time, azimuth and altitude (degrees)."""
+    lat = cfg["location"]["latitude"]
+    lon = cfg["location"]["longitude"]
+    start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=WARSAW)
+    out: list[dict[str, Any]] = []
+    for k in range(24 * 60 // step_min):
+        local = start + timedelta(minutes=k * step_min)
+        alt, az = _solar_position(lat, lon, local.astimezone(timezone.utc))
+        if alt > 0:
+            out.append({
+                "time": local.strftime("%H:%M"),
+                "az": round(math.degrees(az), 2),
+                "alt": round(math.degrees(alt), 2),
+            })
+    return out
+
+
 def _block_interval_kwh(
     direct: float,
     diffuse: float,

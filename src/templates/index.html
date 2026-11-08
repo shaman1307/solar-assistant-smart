@@ -2408,16 +2408,25 @@
       white-space: nowrap;
       line-height: 1;
     }
-    .pv-mask-table { border-collapse: collapse; }
-    .pv-mask-table td { padding: 0; border: 1px solid #d1d5db; }
-    .pv-mask-head { font-size: 9px; font-weight: 400; color: #6b7280; padding: 0 2px; text-align: center; }
-    .pv-mask-rowhead { text-align: right; white-space: nowrap; padding-right: 4px; }
-    .pv-mask-cell {
-      display: block; width: 30px; height: 22px; padding: 0; border: 0;
-      font-size: 10px; text-align: center; cursor: pointer;
-      user-select: none; touch-action: manipulation;
+    .pv-mask-wrap { position: relative; width: 100%; max-width: 648px; }
+    .pv-mask-svg { display: block; width: 100%; height: auto; user-select: none; touch-action: manipulation; }
+    .pv-mask-cell { stroke: #d1d5db; stroke-width: 0.4; cursor: pointer; }
+    .pv-mask-cell:hover { stroke: #f59e0b; stroke-width: 1; }
+    .pv-sun-col { fill: none; stroke: #eab308; stroke-width: 0.4; }
+    .pv-sun-top { fill: none; stroke: #eab308; stroke-width: 0.4; }
+    .pv-mask-compass { font-size: 13px; font-weight: 700; fill: #374151; text-anchor: middle; dominant-baseline: central; }
+    .pv-mask-az { font-size: 8px; fill: #9ca3af; text-anchor: middle; dominant-baseline: central; }
+    .pv-mask-ring-label {
+      font-size: 7px; fill: #4b5563; paint-order: stroke; stroke: #ffffff; stroke-width: 2px; pointer-events: none;
     }
-    .pv-mask-cell:focus-visible { outline: 2px solid #f59e0b; outline-offset: -2px; }
+    .pv-mask-panel rect { fill: #1e3a8a; stroke: #93c5fd; stroke-width: 1; }
+    .pv-mask-panel-grid { fill: none; stroke: #93c5fd; stroke-width: 0.6; }
+    .pv-mask-panel-arrow { fill: #f59e0b; }
+    .pv-mask-add {
+      position: absolute; top: 0; right: 0; width: 26px; height: 26px; border-radius: 9999px;
+      border: 1px solid #d1d5db; background: #ffffff; color: #b45309; font-size: 16px; line-height: 1;
+    }
+    .pv-mask-add:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body class="bg-gray-100 text-gray-900 min-h-screen font-sans">
@@ -2718,6 +2727,12 @@
             <button type="button" id="pv-blocks-add" onclick="addPvBlock()"
               class="text-xs font-medium text-amber-700 hover:text-amber-900 shrink-0">+ Add block</button>
           </div>
+          <label class="flex items-center gap-2 mb-2 text-xs text-gray-500"
+            title="Debug marker only: sun path of this day on the horizon masks; not used by the forecast">
+            Sun path day
+            <input type="date" id="pv-sun-date" onchange="loadPvSunPath(this.value)"
+              class="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-800 tabular-nums" />
+          </label>
           <div class="space-y-2" id="pv-blocks">
             <!-- filled by JS -->
           </div>
@@ -6124,8 +6139,13 @@ function pvOptionalNumber(v) {
 const PV_MASK_BINS = 72;
 const PV_MASK_STEP = 5;
 const PV_MASK_MAX = 90;
-const PV_MASK_COLS = 18;
 const PV_MASK_LEVELS = PV_MASK_MAX / PV_MASK_STEP;
+const PV_MASK_DEFAULT_RINGS = 8;
+const PV_MASK_R0 = 30;
+const PV_MASK_R1 = 140;
+
+/** Sun path of the debug day: { date, points: [{ time, az, alt }] }. Display only. */
+let pvSunPath = null;
 
 function pvMaskClamp(v) {
   const n = parseFloat(v);
@@ -6133,11 +6153,13 @@ function pvMaskClamp(v) {
   return Math.min(PV_MASK_MAX, Math.round(n / PV_MASK_STEP) * PV_MASK_STEP);
 }
 
+function pvMaskWrapValues(wrap) {
+  const vals = JSON.parse(wrap?.dataset.pvMaskValues || '[]');
+  return new Array(PV_MASK_BINS).fill(0).map((_, i) => pvMaskClamp(vals[i]));
+}
+
 function pvMaskValuesFromRow(row) {
-  const cells = row.querySelectorAll('[data-pv-mask]');
-  const out = new Array(PV_MASK_BINS).fill(0);
-  cells.forEach(el => { out[Number(el.dataset.pvMask)] = pvMaskClamp(el.dataset.v); });
-  return out;
+  return pvMaskWrapValues(row.querySelector('[data-pv-mask-values]'));
 }
 
 function pvMaskLightness(v) {
@@ -6145,45 +6167,133 @@ function pvMaskLightness(v) {
   return 92 - ((level - 1) * 70) / (PV_MASK_LEVELS - 1);
 }
 
-function pvMaskCellStyle(v) {
-  if (!(v > 0)) return 'background-color:transparent;color:#9ca3af';
-  const l = pvMaskLightness(v);
-  return `background-color:hsl(142,65%,${l.toFixed(1)}%);color:${l < 50 ? '#ffffff' : '#111827'}`;
+function pvMaskRings(values, extra) {
+  const top = Math.max(0, ...values) / PV_MASK_STEP;
+  return Math.min(PV_MASK_LEVELS, Math.max(PV_MASK_DEFAULT_RINGS, top, extra || 0));
 }
 
-function clickPvMaskCell(ev, el) {
-  const rect = el.getBoundingClientRect();
-  const delta = ev.clientX >= rect.left + rect.width / 2 ? PV_MASK_STEP : -PV_MASK_STEP;
-  const states = PV_MASK_LEVELS + 1;
-  const level = (pvMaskClamp(el.dataset.v) / PV_MASK_STEP + delta / PV_MASK_STEP + states) % states;
-  const v = level * PV_MASK_STEP;
-  el.dataset.v = String(v);
-  el.textContent = String(v);
-  el.setAttribute('style', pvMaskCellStyle(v));
+/** Compass azimuth (deg, clockwise from north) and radius → SVG point. */
+function pvMaskPt(r, az) {
+  const a = (az * Math.PI) / 180;
+  return `${(r * Math.sin(a)).toFixed(2)},${(-r * Math.cos(a)).toFixed(2)}`;
+}
+
+function pvMaskSectorPath(r0, r1, az0, az1) {
+  return `M${pvMaskPt(r0, az0)}L${pvMaskPt(r1, az0)}A${r1},${r1} 0 0 1 ${pvMaskPt(r1, az1)}`
+    + `L${pvMaskPt(r0, az1)}A${r0},${r0} 0 0 0 ${pvMaskPt(r0, az0)}Z`;
+}
+
+/** Highest sun altitude per 5° azimuth bin on the debug day. */
+function pvSunByBin() {
+  const out = new Array(PV_MASK_BINS).fill(null);
+  for (const p of pvSunPath?.points || []) {
+    const i = Math.round(p.az / PV_MASK_STEP) % PV_MASK_BINS;
+    if (!out[i] || p.alt > out[i].alt) out[i] = p;
+  }
+  return out;
+}
+
+function pvMaskSvg(values, rings) {
+  const ringR = k => PV_MASK_R0 + ((PV_MASK_R1 - PV_MASK_R0) * k) / rings;
+  const half = PV_MASK_STEP / 2;
+  let cells = '';
+  for (let i = 0; i < PV_MASK_BINS; i++) {
+    const az = i * PV_MASK_STEP;
+    for (let k = 1; k <= rings; k++) {
+      const top = k * PV_MASK_STEP;
+      const fill = values[i] >= top ? `hsl(142,65%,${pvMaskLightness(top).toFixed(1)}%)` : '#f9fafb';
+      cells += `<path d="${pvMaskSectorPath(ringR(k - 1), ringR(k), az - half, az + half)}" fill="${fill}"
+        data-i="${i}" data-k="${k}" class="pv-mask-cell" onclick="clickPvMaskCell(this)"><title>${az}° · ${top - PV_MASK_STEP}–${top}°</title></path>`;
+    }
+  }
+  let sun = '';
+  pvSunByBin().forEach((p, i) => {
+    if (!p) return;
+    const az = i * PV_MASK_STEP;
+    const k = Math.min(rings, Math.max(1, Math.ceil(p.alt / PV_MASK_STEP)));
+    sun += `<path d="${pvMaskSectorPath(PV_MASK_R0, ringR(k), az - half, az + half)}" class="pv-sun-col" />`;
+    sun += `<path d="${pvMaskSectorPath(ringR(k - 1), ringR(k), az - half, az + half)}" class="pv-sun-top">`
+      + `<title>${p.time} · az ${p.az.toFixed(1)}° · alt ${p.alt.toFixed(1)}°</title></path>`;
+  });
+  let labels = '';
+  for (let az = 0; az < 360; az += 30) {
+    const name = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[az];
+    labels += `<text x="${pvMaskPt(PV_MASK_R1 + 12, az).split(',')[0]}" y="${pvMaskPt(PV_MASK_R1 + 12, az).split(',')[1]}"
+      class="${name ? 'pv-mask-compass' : 'pv-mask-az'}">${name || az}</text>`;
+  }
+  for (let k = 2; k <= rings; k += 2) {
+    labels += `<text x="3" y="${(-ringR(k) + 3).toFixed(1)}" class="pv-mask-ring-label">${k * PV_MASK_STEP}°</text>`;
+  }
+  const arrayAz = parseFloat(document.querySelector('[name="solar.azimuth"]')?.value);
+  const panelAz = Number.isFinite(arrayAz) ? arrayAz : 180;
+  const panel = `<g transform="rotate(${panelAz})" class="pv-mask-panel">
+      <path d="M0,-24 L-5,-17 L5,-17 Z" class="pv-mask-panel-arrow" />
+      <rect x="-17" y="-9" width="34" height="18" rx="1.5" />
+      <path d="M-8.5,-9V9M0,-9V9M8.5,-9V9M-17,0H17" class="pv-mask-panel-grid" />
+    </g>`;
+  return `<svg viewBox="-165 -165 330 330" class="pv-mask-svg" role="img" aria-label="Horizon mask">
+      ${cells}<g pointer-events="none">${sun}</g>${labels}${panel}</svg>`;
+}
+
+function pvMaskRender(wrap) {
+  const values = pvMaskWrapValues(wrap);
+  const rings = pvMaskRings(values, Number(wrap.dataset.pvMaskRings) || 0);
+  wrap.dataset.pvMaskRings = String(rings);
+  wrap.querySelector('[data-pv-mask-svg]').innerHTML = pvMaskSvg(values, rings);
+  const addBtn = wrap.querySelector('[data-pv-mask-add]');
+  if (addBtn) addBtn.disabled = rings >= PV_MASK_LEVELS;
+  const range = wrap.querySelector('[data-pv-mask-range]');
+  if (range) range.textContent = `0–${rings * PV_MASK_STEP}°`;
+}
+
+/** Fill the sector from the centre up to the clicked ring; clicking the bar top clears it. */
+function clickPvMaskCell(el) {
+  const wrap = el.closest('[data-pv-mask-values]');
+  const values = pvMaskWrapValues(wrap);
+  const i = Number(el.dataset.i);
+  const top = Number(el.dataset.k) * PV_MASK_STEP;
+  values[i] = values[i] === top ? 0 : top;
+  wrap.dataset.pvMaskValues = JSON.stringify(values);
+  pvMaskRender(wrap);
+}
+
+function addPvMaskRing(btn) {
+  const wrap = btn.closest('[data-pv-mask-values]');
+  wrap.dataset.pvMaskRings = String(Math.min(PV_MASK_LEVELS, (Number(wrap.dataset.pvMaskRings) || 0) + 1));
+  pvMaskRender(wrap);
+}
+
+function renderAllPvMasks() {
+  document.querySelectorAll('#pv-blocks [data-pv-mask-values]').forEach(pvMaskRender);
+}
+
+async function loadPvSunPath(dateStr) {
+  if (!dateStr) {
+    pvSunPath = null;
+    renderAllPvMasks();
+    return;
+  }
+  try {
+    const res = await fetch('api/pv/sun-path?date=' + encodeURIComponent(dateStr));
+    pvSunPath = await res.json();
+  } catch (e) {
+    console.warn('sun path', e);
+    pvSunPath = null;
+  }
+  renderAllPvMasks();
 }
 
 function pvMaskGridHtml(mask) {
   const values = new Array(PV_MASK_BINS).fill(0).map((_, i) => pvMaskClamp(mask?.[i]));
-  const rowLabels = ['N 0°', 'E 90°', 'S 180°', 'W 270°'];
-  let head = '<tr><th></th>';
-  for (let c = 0; c < PV_MASK_COLS; c++) head += `<th class="pv-mask-head">+${c * PV_MASK_STEP}</th>`;
-  head += '</tr>';
-  let body = '';
-  for (let r = 0; r < PV_MASK_BINS / PV_MASK_COLS; r++) {
-    body += `<tr><th class="pv-mask-head pv-mask-rowhead">${rowLabels[r]}</th>`;
-    for (let c = 0; c < PV_MASK_COLS; c++) {
-      const idx = r * PV_MASK_COLS + c;
-      const v = values[idx];
-      body += `<td><button type="button" data-pv-mask="${idx}" data-v="${v}" title="${idx * PV_MASK_STEP}°"
-        onclick="clickPvMaskCell(event, this)" class="pv-mask-cell" style="${pvMaskCellStyle(v)}">${v}</button></td>`;
-    }
-    body += '</tr>';
-  }
   return `
-      <div class="mt-3">
-        <p class="text-xs text-gray-500 mb-1">Horizon mask (°)</p>
-        <div class="overflow-x-auto">
-          <table class="pv-mask-table"><thead>${head}</thead><tbody>${body}</tbody></table>
+      <div class="mt-3" data-pv-mask-values='${JSON.stringify(values)}' data-pv-mask-rings="0">
+        <div class="flex items-center gap-2 mb-1">
+          <p class="text-xs text-gray-500">Horizon mask <span data-pv-mask-range></span></p>
+        </div>
+        <div class="pv-mask-wrap">
+          <div data-pv-mask-svg></div>
+          <button type="button" data-pv-mask-add onclick="addPvMaskRing(this)" class="pv-mask-add"
+            title="Add a 5° ring (up to 90°)" aria-label="Add a 5° ring">+</button>
         </div>
       </div>`;
 }
@@ -6251,6 +6361,12 @@ function renderPvBlocks(blocks) {
   const list = Array.isArray(blocks) && blocks.length ? blocks : [{ power_kwp: 1.5, tilt: 35 }];
   const canRemove = list.length > 1;
   blocksEl.innerHTML = list.map((b, i) => pvBlockRowHtml(i, b, canRemove)).join('');
+  renderAllPvMasks();
+  const sunDate = document.getElementById('pv-sun-date');
+  if (sunDate && !sunDate.value) {
+    sunDate.value = DEBUG_TODAY;
+    void loadPvSunPath(sunDate.value);
+  }
 }
 
 function addPvBlock() {

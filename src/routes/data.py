@@ -179,6 +179,12 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
     }
 
 
+@router.get("/api/pv/sun-path")
+async def api_pv_sun_path(date: str) -> dict[str, Any]:
+    """Sun azimuth/altitude over a day for the horizon-mask debug marker."""
+    return {"date": date, "points": forecast_mod.sun_path(load_config(), date)}
+
+
 @router.get("/api/rce")
 async def api_rce() -> dict[str, Any]:
     """Chart RCE from the same stored quarters the optimizer uses."""
