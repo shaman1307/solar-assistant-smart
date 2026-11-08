@@ -264,10 +264,11 @@ def _influx_chart_mean_kw(
     since: str,
     until: str,
     date_str: str,
+    field: str = "combined",
 ) -> list[float | None]:
     """Mean power (kW) per chart bucket from a live SA watt measurement."""
     q = (
-        f'SELECT mean("combined") FROM "{meas}" '
+        f'SELECT mean("{field}") FROM "{meas}" '
         f'WHERE time >= {since} AND time < {until} '
         f'GROUP BY time({CHART_SLOT_MIN}m) fill(none) ORDER BY time ASC'
     )

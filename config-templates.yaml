@@ -15,10 +15,13 @@ templates:
       blocks:
         - power_kwp: 1.5
           tilt: 35
+          mppt: 2
         - power_kwp: 5.0
           tilt: 25
+          mppt: 1
         - power_kwp: 2.5
           tilt: 65
+          mppt: 2
     inverter:
       ac_capacity_kw: 8.0
     battery:

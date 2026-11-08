@@ -2408,6 +2408,16 @@
       white-space: nowrap;
       line-height: 1;
     }
+    .pv-mask-table { border-collapse: collapse; }
+    .pv-mask-table td { padding: 0; border: 1px solid #d1d5db; }
+    .pv-mask-head { font-size: 9px; font-weight: 400; color: #6b7280; padding: 0 2px; text-align: center; }
+    .pv-mask-rowhead { text-align: right; white-space: nowrap; padding-right: 4px; }
+    .pv-mask-cell {
+      display: block; width: 30px; height: 22px; padding: 0; border: 0;
+      font-size: 10px; text-align: center; cursor: pointer;
+      user-select: none; touch-action: manipulation;
+    }
+    .pv-mask-cell:focus-visible { outline: 2px solid #f59e0b; outline-offset: -2px; }
   </style>
 </head>
 <body class="bg-gray-100 text-gray-900 min-h-screen font-sans">
@@ -2687,7 +2697,7 @@
       </fieldset>
 
       <!-- Solar -->
-      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4 min-w-0">
         <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Solar Array</legend>
         <div class="grid grid-cols-2 gap-4">
           <div>
@@ -5239,6 +5249,7 @@ async function refreshForecastOverridesPlan() {
       evSaveTimer = null;
       await saveEvCharging();
     }
+    await fetch('api/forecast/recompute-pv', { method: 'POST' });
     // Unlock solid SOC (as-if-00:00); plain ?refresh=1 keeps the frozen curve.
     await loadForecast(true, { syncSliders: false });
     const res = await fetch('api/simulation?refresh=1&unlock_plan_soc=1');
@@ -6056,19 +6067,102 @@ function getPvBlocksFromDom() {
   return Array.from(rows).map(row => ({
     power_kwp: parseFloat(row.querySelector('[data-pv-kwp]')?.value) || 0,
     tilt: parseFloat(row.querySelector('[data-pv-tilt]')?.value) || 0,
+    mppt: parseInt(row.querySelector('[data-pv-mppt]')?.value, 10) || null,
+    rear_gain: pvOptionalNumber(row.querySelector('[data-pv-rear-gain]')?.value),
+    rear_az_from: pvOptionalNumber(row.querySelector('[data-pv-rear-from]')?.value),
+    rear_az_to: pvOptionalNumber(row.querySelector('[data-pv-rear-to]')?.value),
+    rear_alt_max: pvOptionalNumber(row.querySelector('[data-pv-rear-alt]')?.value),
+    horizon_mask: pvMaskValuesFromRow(row),
   }));
+}
+
+function pvOptionalNumber(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+const PV_MASK_BINS = 72;
+const PV_MASK_STEP = 5;
+const PV_MASK_MAX = 90;
+const PV_MASK_COLS = 18;
+const PV_MASK_LEVELS = PV_MASK_MAX / PV_MASK_STEP;
+
+function pvMaskClamp(v) {
+  const n = parseFloat(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(PV_MASK_MAX, Math.round(n / PV_MASK_STEP) * PV_MASK_STEP);
+}
+
+function pvMaskValuesFromRow(row) {
+  const cells = row.querySelectorAll('[data-pv-mask]');
+  const out = new Array(PV_MASK_BINS).fill(0);
+  cells.forEach(el => { out[Number(el.dataset.pvMask)] = pvMaskClamp(el.dataset.v); });
+  return out;
+}
+
+function pvMaskLightness(v) {
+  const level = v / PV_MASK_STEP;
+  return 92 - ((level - 1) * 70) / (PV_MASK_LEVELS - 1);
+}
+
+function pvMaskCellStyle(v) {
+  if (!(v > 0)) return 'background-color:transparent;color:#9ca3af';
+  const l = pvMaskLightness(v);
+  return `background-color:hsl(142,65%,${l.toFixed(1)}%);color:${l < 50 ? '#ffffff' : '#111827'}`;
+}
+
+function clickPvMaskCell(ev, el) {
+  const rect = el.getBoundingClientRect();
+  const delta = ev.clientX >= rect.left + rect.width / 2 ? PV_MASK_STEP : -PV_MASK_STEP;
+  const states = PV_MASK_LEVELS + 1;
+  const level = (pvMaskClamp(el.dataset.v) / PV_MASK_STEP + delta / PV_MASK_STEP + states) % states;
+  const v = level * PV_MASK_STEP;
+  el.dataset.v = String(v);
+  el.textContent = String(v);
+  el.setAttribute('style', pvMaskCellStyle(v));
+}
+
+function pvMaskGridHtml(mask) {
+  const values = new Array(PV_MASK_BINS).fill(0).map((_, i) => pvMaskClamp(mask?.[i]));
+  const rowLabels = ['N 0°', 'E 90°', 'S 180°', 'W 270°'];
+  let head = '<tr><th></th>';
+  for (let c = 0; c < PV_MASK_COLS; c++) head += `<th class="pv-mask-head">+${c * PV_MASK_STEP}</th>`;
+  head += '</tr>';
+  let body = '';
+  for (let r = 0; r < PV_MASK_BINS / PV_MASK_COLS; r++) {
+    body += `<tr><th class="pv-mask-head pv-mask-rowhead">${rowLabels[r]}</th>`;
+    for (let c = 0; c < PV_MASK_COLS; c++) {
+      const idx = r * PV_MASK_COLS + c;
+      const v = values[idx];
+      body += `<td><button type="button" data-pv-mask="${idx}" data-v="${v}" title="${idx * PV_MASK_STEP}°"
+        onclick="clickPvMaskCell(event, this)" class="pv-mask-cell" style="${pvMaskCellStyle(v)}">${v}</button></td>`;
+    }
+    body += '</tr>';
+  }
+  return `
+      <div class="mt-3">
+        <p class="text-xs text-gray-500 mb-1">Horizon mask (°)</p>
+        <div class="overflow-x-auto">
+          <table class="pv-mask-table"><thead>${head}</thead><tbody>${body}</tbody></table>
+        </div>
+      </div>`;
 }
 
 function pvBlockRowHtml(i, block, canRemove) {
   const kwp = block?.power_kwp ?? 0;
   const tilt = block?.tilt ?? 0;
+  const mppt = block?.mppt ?? '';
+  const mpptOptions = ['', 1, 2].map(v =>
+    `<option value="${v}"${String(v) === String(mppt) ? ' selected' : ''}>${v === '' ? '—' : v}</option>`
+  ).join('');
   const removeBtn = canRemove
     ? `<button type="button" onclick="removePvBlock(this)" aria-label="Remove block ${i + 1}"
          class="px-2 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded shrink-0">×</button>`
     : '';
   return `
-    <div class="flex gap-2 items-end bg-gray-100 rounded-lg p-3" data-pv-block>
-      <div class="flex-1 grid grid-cols-2 gap-3 min-w-0">
+    <div class="bg-gray-100 rounded-lg p-3" data-pv-block>
+    <div class="flex gap-2 items-end">
+      <div class="flex-1 grid grid-cols-3 gap-3 min-w-0">
         <div>
           <label class="text-xs text-gray-500 block mb-1">Block ${i + 1} kWp</label>
           <input data-pv-kwp type="number" step="0.1" min="0" required value="${kwp}"
@@ -6079,8 +6173,35 @@ function pvBlockRowHtml(i, block, canRemove) {
           <input data-pv-tilt type="number" step="1" min="0" max="90" required value="${tilt}"
             class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
         </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">MPPT</label>
+          <select data-pv-mppt
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500">${mpptOptions}</select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Rear gain</label>
+          <input data-pv-rear-gain type="number" step="0.01" min="0" max="1" value="${block?.rear_gain ?? ''}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Rear az from (°)</label>
+          <input data-pv-rear-from type="number" step="5" min="0" max="360" value="${block?.rear_az_from ?? ''}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Rear az to (°)</label>
+          <input data-pv-rear-to type="number" step="5" min="0" max="360" value="${block?.rear_az_to ?? ''}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Rear alt max (°)</label>
+          <input data-pv-rear-alt type="number" step="1" min="0" max="90" value="${block?.rear_alt_max ?? ''}"
+            class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
       </div>
       ${removeBtn}
+    </div>
+    ${pvMaskGridHtml(block?.horizon_mask)}
     </div>`;
 }
 
@@ -6207,6 +6328,7 @@ async function saveConfig(event) {
   });
   if (!updated.solar) updated.solar = {};
   updated.solar.blocks = getPvBlocksFromDom();
+  delete updated.solar.horizon_masks;
   if (!updated.timer_schedule) updated.timer_schedule = {};
   updated.timer_schedule.forbidden = getForbidRangesFromDom();
   const presetEl = document.getElementById('tariff-preset');

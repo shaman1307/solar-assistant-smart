@@ -153,6 +153,20 @@ async def api_forecast() -> dict[str, Any]:
     return forecast
 
 
+@router.post("/api/forecast/recompute-pv")
+async def api_forecast_recompute_pv() -> dict[str, Any]:
+    """Rebuild today/tomorrow PV from the last cached Open-Meteo radiation."""
+    cache = await forecast_mod.recompute_pv_from_cached_radiation(load_config())
+    days = cache.get("days") or {}
+    return {
+        "ok": True,
+        "pv_total": {
+            d: (days.get(d) or {}).get("pv", {}).get("total_effective")
+            for d in days
+        },
+    }
+
+
 @router.get("/api/rce")
 async def api_rce() -> dict[str, Any]:
     """Chart RCE from the same stored quarters the optimizer uses."""

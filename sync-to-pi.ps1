@@ -40,6 +40,8 @@ $files = @(
     "src\influx_datapatch.py",
     "scripts\influx_datapatch.py",
     "src\forecast.py",
+    "src\pv_horizon.py",
+    "scripts\build_horizon_mask.py",
     "src\forecast_cache.py",
     "src\ev_charging.py",
     "src\rce.py",

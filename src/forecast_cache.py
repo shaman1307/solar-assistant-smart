@@ -213,6 +213,7 @@ def build_day_forecast(
     cfg: dict,
     pv_hourly: list[float],
     pv_q15: list[float] | None = None,
+    pv_radiation: dict[str, list] | None = None,
 ) -> dict[str, Any]:
     load_q15, load_hourly = compute_weekday_load_profile(date_str, cfg)
     day = _empty_day()
@@ -222,10 +223,15 @@ def build_day_forecast(
     while len(q15) < Q15_PER_DAY:
         q15.append(0.0)
     _set_metric_effective(day["pv"], pv_hourly, q15[:Q15_PER_DAY])
+    if pv_radiation:
+        day["pv"]["radiation"] = pv_radiation
     return day
 
 
-def compute_pv_profiles_for_date(date_str: str, cfg: dict) -> tuple[list[float], list[float]]:
+def compute_pv_profiles_for_date(
+    date_str: str, cfg: dict,
+) -> tuple[list[float], list[float], dict[str, list] | None]:
+    """PV hourly, q15 and the Open-Meteo q15 radiation they came from."""
     from .forecast import fetch_pv_for_dates_sync
 
     batch, _om_failed = fetch_pv_for_dates_sync(cfg, [date_str])
@@ -237,12 +243,31 @@ def compute_pv_profiles_for_date(date_str: str, cfg: dict) -> tuple[list[float],
     q15 = [round(float(v), 6) for v in q15_raw[:Q15_PER_DAY]]
     while len(q15) < Q15_PER_DAY:
         q15.append(0.0)
-    return hourly, q15
+    return hourly, q15, prof.get("radiation")
 
 
 def compute_pv_hourly_for_date(date_str: str, cfg: dict) -> list[float]:
-    hourly, _q15 = compute_pv_profiles_for_date(date_str, cfg)
+    hourly, _q15, _radiation = compute_pv_profiles_for_date(date_str, cfg)
     return hourly
+
+
+def recompute_pv_from_cached_radiation(cfg: dict, dates: list[str]) -> dict[str, Any]:
+    """Rebuild PV for cached days from their last stored Open-Meteo radiation."""
+    from .forecast import pv_q15_from_radiation
+
+    cache = ensure_cache_days(cfg, dates)
+    days = cache["days"]
+    for date_str in dates:
+        pv_metric = (days.get(date_str) or {}).get("pv") or {}
+        radiation = pv_metric.get("radiation")
+        if not radiation:
+            log.warning("PV recompute — no stored radiation for %s", date_str)
+            continue
+        q15 = pv_q15_from_radiation(cfg, radiation, date_str)
+        _set_metric_effective(pv_metric, q15_to_hourly(q15), q15)
+    save_day_cache(cache)
+    log.info("PV recomputed from cached radiation for %s", ", ".join(dates))
+    return refresh_effective_metrics(cfg, dates)
 
 
 def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, Any]:
@@ -276,6 +301,8 @@ def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, 
             merged_q15.append(0.0)
         pv_metric = days[date_str]["pv"]
         _set_metric_effective(pv_metric, merged, merged_q15)
+        if prof.get("radiation"):
+            pv_metric["radiation"] = prof["radiation"]
 
     cache["last_om_refresh"] = now.strftime("%Y-%m-%d %H:%M:%S")
     log.info(
@@ -299,8 +326,8 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
         "days": {},
     }
     for date_str in (today_str, d1, d2):
-        pv_h, pv_q = compute_pv_profiles_for_date(date_str, cfg)
-        cache["days"][date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q)
+        pv_h, pv_q, pv_rad = compute_pv_profiles_for_date(date_str, cfg)
+        cache["days"][date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q, pv_rad)
 
     save_day_cache(cache)
 
@@ -325,8 +352,8 @@ def ensure_cache_days(cfg: dict, dates: list[str]) -> dict[str, Any]:
             pv_total = float((existing.get("pv") or {}).get("total_base") or 0.0)
             if load_ok and pv_total > 0.01:
                 continue
-        pv_h, pv_q = compute_pv_profiles_for_date(date_str, cfg)
-        days[date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q)
+        pv_h, pv_q, pv_rad = compute_pv_profiles_for_date(date_str, cfg)
+        days[date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q, pv_rad)
         changed = True
     if changed:
         cache["computed_at"] = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")

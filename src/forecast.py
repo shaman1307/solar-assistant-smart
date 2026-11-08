@@ -8,17 +8,19 @@ Load/PV profiles for today and tomorrow come from the nightly file cache
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
 
 from . import forecast_cache as fc
 from . import ev_charging as ev
-from .influxdb import now_warsaw
+from . import pv_horizon as pvh
+from .influxdb import WARSAW, now_warsaw
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +84,16 @@ async def apply_overrides_to_cache(cfg: dict) -> dict[str, Any]:
     return await asyncio.to_thread(fc.apply_overrides_to_cache, cfg)
 
 
+async def recompute_pv_from_cached_radiation(cfg: dict) -> dict[str, Any]:
+    """Rebuild today/tomorrow PV from cached radiation (no Open-Meteo request)."""
+    today_str = now_warsaw().strftime("%Y-%m-%d")
+    tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
+    invalidate_cache()
+    return await asyncio.to_thread(
+        fc.recompute_pv_from_cached_radiation, cfg, [today_str, tomorrow_str],
+    )
+
+
 def _pv_from_day_cache(cfg: dict) -> dict[str, list[float]]:
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -99,7 +111,11 @@ def _pv_from_day_cache(cfg: dict) -> dict[str, list[float]]:
 def _pv_cache_key(cfg: dict) -> tuple:
     solar = cfg["solar"]
     blocks = tuple(
-        (b["power_kwp"], b["tilt"]) for b in solar.get("blocks", [])
+        (
+            b["power_kwp"], b["tilt"], json.dumps(b.get("horizon_mask") or []),
+            b.get("rear_gain"), b.get("rear_az_from"), b.get("rear_az_to"), b.get("rear_alt_max"),
+        )
+        for b in solar.get("blocks", [])
     )
     return (
         round(cfg["location"]["latitude"], 4),
@@ -226,15 +242,42 @@ def fetch_pv_for_dates_sync(
         direct = q15_data["direct_radiation"]
         diffuse = q15_data["diffuse_radiation"]
         for date_str in future:
-            q15 = _fill_pv_q15_for_date(cfg, times, direct, diffuse, date_str)
-            q15 = [round(float(v), 6) for v in q15[:fc.Q15_PER_DAY]]
+            radiation = _radiation_for_date(times, direct, diffuse, date_str)
+            q15 = pv_q15_from_radiation(cfg, radiation, date_str)
             hourly = [round(float(v), 3) for v in fc.q15_to_hourly(q15)[:24]]
-            out[date_str] = {"hourly": hourly, "q15": q15}
+            out[date_str] = {"hourly": hourly, "q15": q15, "radiation": radiation}
     except Exception as exc:
         log.warning("Open-Meteo 15-min PV batch fetch failed: %s", exc)
         om_fetch_failed = True
 
     return out, om_fetch_failed
+
+
+def _radiation_for_date(
+    times: list[str],
+    direct: list[float],
+    diffuse: list[float],
+    date_str: str,
+) -> dict[str, list]:
+    """Open-Meteo q15 radiation rows whose interval falls on this Warsaw day."""
+    next_midnight = (
+        datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)
+    ).strftime("%Y-%m-%dT00:00")
+    out: dict[str, list] = {"time": [], "direct": [], "diffuse": []}
+    for t, d, df in zip(times, direct, diffuse):
+        if t[:10] == date_str or t[:16] == next_midnight:
+            out["time"].append(t[:16])
+            out["direct"].append(float(d or 0))
+            out["diffuse"].append(float(df or 0))
+    return out
+
+
+def pv_q15_from_radiation(cfg: dict, radiation: dict[str, list], date_str: str) -> list[float]:
+    """PV q15 kWh for a Warsaw day from stored Open-Meteo q15 radiation."""
+    q15 = _fill_pv_q15_for_date(
+        cfg, radiation["time"], radiation["direct"], radiation["diffuse"], date_str,
+    )
+    return [round(float(v), 6) for v in q15[:fc.Q15_PER_DAY]]
 
 
 def _http_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -294,34 +337,7 @@ def _fill_pv_q15_for_date(
     diffuse: list[float],
     date_str: str,
 ) -> list[float]:
-    q15 = [0.0] * fc.Q15_PER_DAY
-    lat = cfg["location"]["latitude"]
-    azimuth = cfg["solar"]["azimuth"]
-    loss = cfg["solar"]["system_loss_factor"]
-    blocks = cfg["solar"]["blocks"]
-
-    for t, d, df in zip(times, direct, diffuse):
-        if t[:10] != date_str:
-            continue
-        dt = datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
-        slot = dt.hour * 4 + dt.minute // 15
-        if not (0 <= slot < fc.Q15_PER_DAY):
-            continue
-        sun_alt, sun_az = _solar_position(lat, dt)
-        kwh = 0.0
-        for block in blocks:
-            kwh += _block_interval_kwh(
-                d, df,
-                block["power_kwp"],
-                block["tilt"],
-                azimuth,
-                sun_alt,
-                sun_az,
-                loss,
-                interval_h=0.25,
-            )
-        q15[slot] += kwh
-    return q15
+    return _fill_pv_intervals(cfg, times, direct, diffuse, date_str, interval_min=15)
 
 
 def _fill_pv_for_date(
@@ -331,18 +347,47 @@ def _fill_pv_for_date(
     diffuse: list[float],
     date_str: str,
 ) -> list[float]:
-    pv = [0.0] * 24
+    return _fill_pv_intervals(cfg, times, direct, diffuse, date_str, interval_min=60)
+
+
+def _fill_pv_intervals(
+    cfg: dict,
+    times: list[str],
+    direct: list[float],
+    diffuse: list[float],
+    date_str: str,
+    *,
+    interval_min: int,
+) -> list[float]:
+    """PV kWh per Warsaw-day slot from Open-Meteo radiation.
+
+    Open-Meteo labels each radiation value with the end of its averaging
+    interval; the value fills the slot that starts ``interval_min`` earlier,
+    with the sun taken at the interval midpoint.
+    """
+    n_slots = 24 * 60 // interval_min
+    out = [0.0] * n_slots
     lat = cfg["location"]["latitude"]
-    azimuth = cfg["solar"]["azimuth"]
-    loss = cfg["solar"]["system_loss_factor"]
-    blocks = cfg["solar"]["blocks"]
+    lon = cfg["location"]["longitude"]
+    solar = cfg["solar"]
+    azimuth = solar["azimuth"]
+    loss = solar["system_loss_factor"]
+    blocks = solar["blocks"]
+    interval = timedelta(minutes=interval_min)
 
     for t, d, df in zip(times, direct, diffuse):
-        if t[:10] != date_str:
+        end_utc = (
+            datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
+            .replace(tzinfo=WARSAW)
+            .astimezone(timezone.utc)
+        )
+        start_local = (end_utc - interval).astimezone(WARSAW)
+        if start_local.strftime("%Y-%m-%d") != date_str:
             continue
-        hour = int(t[11:13])
-        dt = datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
-        sun_alt, sun_az = _solar_position(lat, dt)
+        slot = (start_local.hour * 60 + start_local.minute) // interval_min
+        if not (0 <= slot < n_slots):
+            continue
+        sun_alt, sun_az = _solar_position(lat, lon, end_utc - interval / 2)
         kwh = 0.0
         for block in blocks:
             kwh += _block_interval_kwh(
@@ -353,15 +398,23 @@ def _fill_pv_for_date(
                 sun_alt,
                 sun_az,
                 loss,
-                interval_h=1.0,
+                interval_h=interval_min / 60.0,
+                beam_visible=pvh.beam_visible(block.get("horizon_mask"), sun_alt, sun_az),
+                rear_gain=pvh.rear_gain(block, sun_alt, sun_az),
             )
-        pv[hour] += kwh
-    return pv
+        out[slot] += kwh
+    return out
 
 
-def _solar_position(lat_deg: float, dt: datetime) -> tuple[float, float]:
-    day_of_year = dt.timetuple().tm_yday
-    hour = dt.hour + dt.minute / 60.0
+def _solar_position(lat_deg: float, lon_deg: float, when_utc: datetime) -> tuple[float, float]:
+    """Sun altitude and compass azimuth (radians) at an aware UTC instant."""
+    day_of_year = when_utc.timetuple().tm_yday
+    b = math.radians(360 / 365 * (day_of_year - 81))
+    eot_min = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+    hour = (
+        when_utc.hour + when_utc.minute / 60.0 + when_utc.second / 3600.0
+        + lon_deg / 15.0 + eot_min / 60.0
+    )
     declination = math.radians(23.45 * math.sin(math.radians(360 / 365 * (day_of_year + 284))))
     hour_angle = math.radians(15 * (hour - 12))
     lat_rad = math.radians(lat_deg)
@@ -391,7 +444,10 @@ def _block_interval_kwh(
     loss: float,
     *,
     interval_h: float = 1.0,
+    beam_visible: bool = True,
+    rear_gain: float = 0.0,
 ) -> float:
+    """Front-plane irradiance plus rear-side gain as a fraction of direct normal."""
     if sun_alt <= 0.05:
         return 0.0
     t_r = math.radians(tilt_deg)
@@ -400,8 +456,11 @@ def _block_interval_kwh(
         math.sin(sun_alt) * math.cos(t_r)
         + math.cos(sun_alt) * math.sin(t_r) * math.cos(sun_az - az_r)
     )
-    proj = max(0.0, cos_i / math.sin(sun_alt))
-    irr_wh_m2 = ((direct or 0) * proj + (diffuse or 0) * (1 + math.cos(t_r)) / 2) * interval_h
+    proj = max(0.0, cos_i / math.sin(sun_alt)) if beam_visible else 0.0
+    rear = rear_gain / math.sin(sun_alt) if beam_visible else 0.0
+    irr_wh_m2 = (
+        (direct or 0) * (proj + rear) + (diffuse or 0) * (1 + math.cos(t_r)) / 2
+    ) * interval_h
     return irr_wh_m2 / 1000.0 * power_kwp * loss
 
 
