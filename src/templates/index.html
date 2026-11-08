@@ -2422,6 +2422,17 @@
     .pv-mask-panel rect { fill: #1e3a8a; stroke: #93c5fd; stroke-width: 1; }
     .pv-mask-panel-grid { fill: none; stroke: #93c5fd; stroke-width: 0.6; }
     .pv-mask-panel-arrow { fill: #f59e0b; }
+    .pv-block-fields { width: 9rem; }
+    .pv-photo-thumb { display: block; max-width: 100%; max-height: 360px; border-radius: 6px; border: 1px solid #d1d5db; }
+    .pv-mask-details > summary, .pv-rear-details > summary { list-style-position: inside; }
+    .pv-photo-btn {
+      position: absolute; bottom: 0; left: 100%; margin-left: 8px;
+      display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+      border: 1px solid #d1d5db; border-radius: 6px; background: #ffffff; color: #374151; cursor: pointer;
+    }
+    .pv-photo-btn-solo { position: static; margin-left: 0; }
+    [data-pv-photo-msg]:empty { display: none; }
+    .pv-photo-btn:hover { border-color: #f59e0b; }
     .pv-mask-steps { position: absolute; top: 0; right: 0; display: flex; flex-direction: column; gap: 6px; }
     .pv-mask-add {
       width: 26px; height: 26px; border-radius: 9999px;
@@ -6129,6 +6140,7 @@ function getPvBlocksFromDom() {
     rear_az_to: pvOptionalNumber(row.querySelector('[data-pv-rear-to]')?.value),
     rear_alt_max: pvOptionalNumber(row.querySelector('[data-pv-rear-alt]')?.value),
     horizon_mask: pvMaskValuesFromRow(row),
+    photo: row.dataset.pvPhoto || null,
   }));
 }
 
@@ -6294,10 +6306,8 @@ async function loadPvSunPath(dateStr) {
 function pvMaskGridHtml(mask) {
   const values = new Array(PV_MASK_BINS).fill(0).map((_, i) => pvMaskClamp(mask?.[i]));
   return `
-      <div class="mt-3" data-pv-mask-values='${JSON.stringify(values)}' data-pv-mask-rings="0">
-        <div class="flex items-center gap-2 mb-1">
-          <p class="text-xs text-gray-500">Horizon mask <span data-pv-mask-range></span></p>
-        </div>
+      <details class="mt-1 pv-mask-details" data-pv-mask-values='${JSON.stringify(values)}' data-pv-mask-rings="0">
+        <summary class="text-xs text-gray-500 cursor-pointer select-none mb-1">Horizon mask <span data-pv-mask-range></span></summary>
         <div class="pv-mask-wrap">
           <div data-pv-mask-svg></div>
           <div class="pv-mask-steps">
@@ -6307,7 +6317,62 @@ function pvMaskGridHtml(mask) {
               title="Remove a 5° ring (not below the highest bar)" aria-label="Remove a 5° ring">−</button>
           </div>
         </div>
-      </div>`;
+      </details>`;
+}
+
+const PV_PHOTO_MAX_LONG = 800;
+const PV_PHOTO_MAX_SHORT = 600;
+
+function pvPhotoUrl(name) {
+  return 'api/pv/block-photo/' + encodeURIComponent(name);
+}
+
+function pvPhotoInnerHtml(name) {
+  const thumb = name
+    ? `<a href="${pvPhotoUrl(name)}" target="_blank" rel="noopener" title="Open full size">
+         <img src="${pvPhotoUrl(name)}" alt="Block photo" class="pv-photo-thumb" /></a>`
+    : '';
+  return `<div class="relative inline-block max-w-full">${thumb}
+    <label class="pv-photo-btn${name ? '' : ' pv-photo-btn-solo'}" title="${name ? 'Replace photo' : 'Upload photo'}" aria-label="${name ? 'Replace photo' : 'Upload photo'}">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      <input type="file" accept="image/jpeg,image/png,image/webp" class="hidden" onchange="uploadPvBlockPhoto(this)" />
+    </label></div>
+    <span data-pv-photo-msg class="text-xs text-gray-500"></span>`;
+}
+
+/** Downscale to fit 800×600 (either orientation) and re-encode as JPEG. */
+async function pvPhotoResize(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const long = Math.max(bmp.width, bmp.height);
+  const short = Math.min(bmp.width, bmp.height);
+  const k = Math.min(1, PV_PHOTO_MAX_LONG / long, PV_PHOTO_MAX_SHORT / short);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * k);
+  canvas.height = Math.round(bmp.height * k);
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+}
+
+async function uploadPvBlockPhoto(input) {
+  const file = input.files?.[0];
+  const row = input.closest('[data-pv-block]');
+  const box = row.querySelector('[data-pv-photo-box]');
+  const msg = box.querySelector('[data-pv-photo-msg]');
+  if (!file) return;
+  msg.textContent = 'Uploading…';
+  try {
+    const blob = await pvPhotoResize(file);
+    const res = await fetch('api/pv/block-photo', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+    row.dataset.pvPhoto = data.photo;
+    box.innerHTML = pvPhotoInnerHtml(data.photo);
+    box.querySelector('[data-pv-photo-msg]').textContent = 'Save the configuration to keep this photo';
+  } catch (e) {
+    msg.textContent = String(e.message || e);
+  }
 }
 
 function pvBlockRowHtml(i, block, canRemove) {
@@ -6319,12 +6384,12 @@ function pvBlockRowHtml(i, block, canRemove) {
   ).join('');
   const removeBtn = canRemove
     ? `<button type="button" onclick="removePvBlock(this)" aria-label="Remove block ${i + 1}"
-         class="px-2 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded shrink-0">×</button>`
+         class="absolute top-2 right-2 px-2 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded">×</button>`
     : '';
   return `
-    <div class="bg-gray-100 rounded-lg p-3" data-pv-block>
-    <div class="flex gap-2 items-end">
-      <div class="flex-1 grid grid-cols-3 gap-3 min-w-0">
+    <div class="relative bg-gray-100 rounded-lg p-3" data-pv-block data-pv-photo="${block?.photo || ''}">
+    <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-stretch pr-10">
+      <div class="pv-block-fields flex flex-col justify-between gap-2 shrink-0">
         <div>
           <label class="text-xs text-gray-500 block mb-1">Block ${i + 1} kWp</label>
           <input data-pv-kwp type="number" step="0.1" min="0" required value="${kwp}"
@@ -6340,6 +6405,9 @@ function pvBlockRowHtml(i, block, canRemove) {
           <select data-pv-mppt
             class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500">${mpptOptions}</select>
         </div>
+        <details class="pv-rear-details">
+        <summary class="text-xs text-gray-500 cursor-pointer select-none">Rear side</summary>
+        <div class="grid grid-cols-1 gap-2 mt-2">
         <div>
           <label class="text-xs text-gray-500 block mb-1">Rear gain</label>
           <input data-pv-rear-gain type="number" step="0.01" min="0" max="1" value="${block?.rear_gain ?? ''}"
@@ -6360,9 +6428,12 @@ function pvBlockRowHtml(i, block, canRemove) {
           <input data-pv-rear-alt type="number" step="1" min="0" max="90" value="${block?.rear_alt_max ?? ''}"
             class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
         </div>
+        </div>
+        </details>
       </div>
-      ${removeBtn}
+      <div class="flex-1 min-w-0 flex flex-col items-start gap-2" data-pv-photo-box>${pvPhotoInnerHtml(block?.photo)}</div>
     </div>
+    ${removeBtn}
     ${pvMaskGridHtml(block?.horizon_mask)}
     </div>`;
 }

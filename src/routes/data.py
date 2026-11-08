@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import uuid
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from .. import forecast as forecast_mod
 from .. import influxdb as influxdb_mod
 from .. import rce as rce_mod
 from .. import sa_client
-from ..config import load_config, save_config
+from ..config import BASE_DIR, load_config, save_config
 from ..influxdb import now_warsaw
 from ..plan_deposits import open_month_id, run_deposit_cascade
 from ..plan_monthly_history import build_month_history
@@ -41,6 +44,11 @@ from ..timer_plan import parse_timer_schedule_segments
 from .. import forecast_cache as fc
 
 router = APIRouter()
+
+PV_PHOTO_DIR = BASE_DIR / "data" / "pv_photos"
+PV_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+_PV_PHOTO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+_PV_PHOTO_NAME = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp)$")
 
 _SA_DAILY_ENERGY_KEYS = (
     "pv_energy_today",
@@ -183,6 +191,30 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
 async def api_pv_sun_path(date: str) -> dict[str, Any]:
     """Sun azimuth/altitude over a day for the horizon-mask debug marker."""
     return {"date": date, "points": forecast_mod.sun_path(load_config(), date)}
+
+
+@router.post("/api/pv/block-photo")
+async def api_pv_block_photo_upload(request: Request) -> dict[str, str]:
+    """Store a PV block photo (raw image body); the block keeps the returned name in config."""
+    ext = _PV_PHOTO_EXT.get(request.headers.get("content-type", "").split(";")[0].strip())
+    if not ext:
+        raise HTTPException(status_code=415, detail="Photo must be JPEG, PNG or WebP")
+    body = await request.body()
+    if not body or len(body) > PV_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Photo must be 1 byte to 5 MB")
+    name = f"{uuid.uuid4().hex}.{ext}"
+    PV_PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread((PV_PHOTO_DIR / name).write_bytes, body)
+    return {"photo": name}
+
+
+@router.get("/api/pv/block-photo/{name}")
+async def api_pv_block_photo(name: str) -> FileResponse:
+    """Serve a stored PV block photo."""
+    path = PV_PHOTO_DIR / name
+    if not _PV_PHOTO_NAME.match(name) or not path.is_file():
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return FileResponse(path)
 
 
 @router.get("/api/rce")
