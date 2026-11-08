@@ -333,6 +333,68 @@ def test_morning_peak_exports_when_it_rates_above_the_evening():
     assert _export_by_hour(controls, offset, steps, slots, 6) >= 2.0
 
 
+def _morning_vs_evening_past_horizon(tomorrow_evening: float):
+    """2026-11-08 15:00 rolling plan: horizon ends 09.11 14:00, RCE known to 23:45."""
+    slots = 4
+    start_h = 15
+    hours = list(range(start_h, start_h + 24))
+    offset = start_h * slots
+    steps = len(hours) * slots
+    today = {16: 1.719, 17: 1.626, 18: 1.6409, 19: 1.6003, 20: 1.5288, 21: 1.3427}
+    tomorrow = {6: 2.3327, 7: 2.3554, 8: 2.2907}
+    rce: list[float | None] = [None] * (48 * slots)
+    for abs_h in range(start_h, 48):
+        clock = abs_h % 24
+        if abs_h < 24:
+            price = today.get(clock, 1.10)
+        elif clock >= 15:
+            price = tomorrow_evening
+        else:
+            price = tomorrow.get(clock, 1.05)
+        for q in range(slots):
+            rce[abs_h * slots + q] = price
+    base = [HourControl(0.0, 0.0, False) for _ in range(steps)]
+    controls = plan_battery_grid_export(
+        base,
+        steps=steps,
+        pv_series=[0.0] * steps,
+        load_series=[0.05] * steps,
+        rce_series=rce,
+        rce_step_offset=offset,
+        step_scale=0.25,
+        initial_soc_kwh=20.0,
+        battery_cap=47.6,
+        min_kwh=7.6,
+        discharge_dc_step=2.0,
+        inverter_ac_step=2.0,
+        eta_grid=0.95,
+        eta_out=0.95,
+        eta_pv_load=0.95,
+        eta_pv_grid=0.95,
+        eta_pv_battery=0.95,
+        eps_step=0.01,
+        reserves=[7.6] * steps,
+        export_floor=0.62,
+        min_hourly_kwh=2.0,
+        cfg=_cfg(),
+        today_date=date(2026, 11, 8),
+    )
+    return controls, offset, steps, slots
+
+
+def test_morning_peak_yields_to_richer_evening_past_horizon():
+    """09.11 H07 rates 2.36; 09.11 evening 3.76 lies past the horizon. Do not Dis H07."""
+    controls, offset, steps, slots = _morning_vs_evening_past_horizon(3.7635)
+    assert _export_by_hour(controls, offset, steps, slots, 24 + 7) < 0.05
+    assert _export_by_hour(controls, offset, steps, slots, 24 + 6) < 0.05
+
+
+def test_morning_peak_exports_when_evening_past_horizon_is_cheaper():
+    """09.11 evening at 1.20 stays below H07 2.36. H07 still sells."""
+    controls, offset, steps, slots = _morning_vs_evening_past_horizon(1.20)
+    assert _export_by_hour(controls, offset, steps, slots, 24 + 7) >= 2.0
+
+
 def test_sale_windows_split_on_noon_gap():
     from src.plan_optimizer import sale_windows
 

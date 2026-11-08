@@ -929,7 +929,8 @@ def plan_battery_grid_export(
     available PV/load and G12 peak/offpeak, not the optimizer hour slice.
     Each start-hour→morning window is filled in clock order so a richer next
     evening cannot skip tonight. A morning-peak hour is left out when a later
-    hour in the evening window has a higher rating. Seed the richest unrounded
+    evening hour (from the window start hour) has a higher rating anywhere in
+    the published RCE, including hours past the horizon. Seed the richest unrounded
     avg, then the 2nd-rated hour (may skip a weaker trough), then grow by
     5-groszy rating (ties: closer to the run). A failed ≥-threshold edge
     closes that side.
@@ -990,6 +991,17 @@ def plan_battery_grid_export(
     day0 = None
     if today_date is not None:
         day0 = today_date.date() if isinstance(today_date, datetime) else today_date
+    evening_ratings = {
+        int(e): float(r) for e, r in ratings.items()
+        if (int(e) % HOURS_PER_DAY) >= window_start
+    }
+    # Published RCE past the horizon end still outranks a morning peak.
+    for e in range(int(max(hours)) + 1, len(rce_series) // slots):
+        if (e % HOURS_PER_DAY) < window_start:
+            continue
+        rating = hour_rce_rating(rce_series, e, slots_per_hour=slots)
+        if rating is not None:
+            evening_ratings[e] = float(rating)
     drop_morning: list[int] = []
     for h, rating in ratings.items():
         clock = int(h) % HOURS_PER_DAY
@@ -1001,10 +1013,8 @@ def plan_battery_grid_export(
             if get_g12_zone(zone_dt, cfg) != "peak":
                 continue
         if any(
-            int(e) > int(h)
-            and (int(e) % HOURS_PER_DAY) >= window_start
-            and float(ratings[e]) > float(rating) + 1e-12
-            for e in ratings
+            e > int(h) and r > float(rating) + 1e-12
+            for e, r in evening_ratings.items()
         ):
             drop_morning.append(int(h))
     for h in drop_morning:
