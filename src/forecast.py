@@ -272,12 +272,44 @@ def _radiation_for_date(
     return out
 
 
-def pv_q15_from_radiation(cfg: dict, radiation: dict[str, list], date_str: str) -> list[float]:
+def pv_q15_from_radiation(
+    cfg: dict,
+    radiation: dict[str, list],
+    date_str: str,
+    *,
+    apply_horizon_mask: bool = True,
+) -> list[float]:
     """PV q15 kWh for a Warsaw day from stored Open-Meteo q15 radiation."""
     q15 = _fill_pv_q15_for_date(
         cfg, radiation["time"], radiation["direct"], radiation["diffuse"], date_str,
+        apply_horizon_mask=apply_horizon_mask,
     )
     return [round(float(v), 6) for v in q15[:fc.Q15_PER_DAY]]
+
+
+def unshaded_pv_q15(
+    cfg: dict,
+    date_str: str,
+    radiation: dict[str, list] | None,
+    *,
+    shaded_effective: list[float] | None = None,
+    shaded_base: list[float] | None = None,
+) -> list[float] | None:
+    """PV q15 with horizon masks ignored, scaled like the shaded series on the chart."""
+    if not radiation or not radiation.get("time"):
+        return None
+    raw = pv_q15_from_radiation(
+        cfg, radiation, date_str, apply_horizon_mask=False,
+    )
+    if shaded_base is None:
+        shaded_base = pv_q15_from_radiation(
+            cfg, radiation, date_str, apply_horizon_mask=True,
+        )
+    base_sum = sum(float(v) for v in shaded_base)
+    effective = shaded_effective if shaded_effective is not None else shaded_base
+    eff_sum = sum(float(v) for v in effective)
+    scale = (eff_sum / base_sum) if base_sum > 1e-9 else 1.0
+    return [round(float(v) * scale, 6) for v in raw]
 
 
 def _http_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -336,8 +368,13 @@ def _fill_pv_q15_for_date(
     direct: list[float],
     diffuse: list[float],
     date_str: str,
+    *,
+    apply_horizon_mask: bool = True,
 ) -> list[float]:
-    return _fill_pv_intervals(cfg, times, direct, diffuse, date_str, interval_min=15)
+    return _fill_pv_intervals(
+        cfg, times, direct, diffuse, date_str,
+        interval_min=15, apply_horizon_mask=apply_horizon_mask,
+    )
 
 
 def _fill_pv_for_date(
@@ -358,6 +395,7 @@ def _fill_pv_intervals(
     date_str: str,
     *,
     interval_min: int,
+    apply_horizon_mask: bool = True,
 ) -> list[float]:
     """PV kWh per Warsaw-day slot from Open-Meteo radiation.
 
@@ -399,7 +437,10 @@ def _fill_pv_intervals(
                 sun_az,
                 loss,
                 interval_h=interval_min / 60.0,
-                beam_visible=pvh.beam_visible(block.get("horizon_mask"), sun_alt, sun_az),
+                beam_visible=(
+                    pvh.beam_visible(block.get("horizon_mask"), sun_alt, sun_az)
+                    if apply_horizon_mask else True
+                ),
                 rear_gain=pvh.rear_gain(block, sun_alt, sun_az),
             )
         out[slot] += kwh
@@ -543,6 +584,13 @@ def _assemble_forecast(
     base_today["load_q15"] = [round(v, 6) for v in today_load_q15]
     base_today["pv_forecast"] = [round(v, 3) for v in today_pv_cached]
     base_today["pv_forecast_q15"] = [round(v, 6) for v in today_pv_forecast_q15]
+    today_unshaded = unshaded_pv_q15(
+        cfg, today_str, (day_t.get("pv") or {}).get("radiation"),
+        shaded_effective=today_pv_forecast_q15,
+        shaded_base=list((day_t.get("pv") or {}).get("base_q15") or today_pv_forecast_q15),
+    )
+    if today_unshaded is not None:
+        base_today["pv_unshaded_q15"] = today_unshaded
     base_today["pv_actual"] = today_pv_actual
     base_today["load_forecast"] = [round(v, 3) for v in today_load]
 
@@ -551,6 +599,13 @@ def _assemble_forecast(
     base_tomorrow["load_q15"] = [round(v, 6) for v in tomorrow_load_q15]
     base_tomorrow["pv_forecast"] = list(tomorrow_pv)
     base_tomorrow["pv_forecast_q15"] = [round(v, 6) for v in tomorrow_pv_forecast_q15]
+    tomorrow_unshaded = unshaded_pv_q15(
+        cfg, tomorrow_str, (day_tm.get("pv") or {}).get("radiation"),
+        shaded_effective=tomorrow_pv_forecast_q15,
+        shaded_base=list((day_tm.get("pv") or {}).get("base_q15") or tomorrow_pv_forecast_q15),
+    )
+    if tomorrow_unshaded is not None:
+        base_tomorrow["pv_unshaded_q15"] = tomorrow_unshaded
     base_tomorrow["pv_actual"] = [None] * 24
     base_tomorrow["load_forecast"] = [round(v, 3) for v in tomorrow_load]
 

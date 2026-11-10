@@ -3315,6 +3315,7 @@
               <div class="absolute inset-0" id="fc-soc-bands"></div>
               <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
                    class="absolute inset-0 w-full h-full overflow-visible" id="fc-svg-load">
+                <polygon id="fc-pv-unshaded" fill="#fbbf24" fill-opacity="0.2" stroke="none"/>
                 <polyline id="fc-pv-line"            fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
                 <polyline id="fc-pv-line-actual"     fill="none" stroke="#fbbf24" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
                 <polyline id="fc-load-line-forecast" fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85"/>
@@ -3850,7 +3851,11 @@ function pastForecastView() {
   const pvQ15 = pastPvRecalc?.date === date ? pastPvRecalc.q15 : fc.pv_q15;
   return {
     date,
-    day: { pv_forecast_q15: pvQ15 || [], load_q15: fc.load_q15 || [] },
+    day: {
+      pv_forecast_q15: pvQ15 || [],
+      pv_unshaded_q15: pastPvRecalc?.date === date ? pastPvRecalc.unshaded : fc.pv_unshaded_q15,
+      load_q15: fc.load_q15 || [],
+    },
     planSoc: simData.plan_soc_q15?.today || [],
     pvActual: q15ToChartKw(eaRowsQ15Field(simData, 'production') || [], false),
     loadActual: q15ToChartKw(eaRowsQ15Field(simData, 'consumption') || [], false),
@@ -3931,8 +3936,8 @@ function expandHourlyToSmoothQ15Kw(hourly) {
 }
 
 /** Native Open-Meteo q15 kWh → chart kW (no interpolation). */
-function forecastPvQ15ToKw(day) {
-  const q15 = day?.pv_forecast_q15;
+function forecastPvQ15ToKw(day, field = 'pv_forecast_q15') {
+  const q15 = day?.[field];
   if (!Array.isArray(q15) || !q15.length) return [];
   return q15ToChartKw(q15.slice(0, CHART_SLOTS_Q15), false);
 }
@@ -4065,6 +4070,15 @@ function dashLinePts(data, slotCount, toY) {
   return pts.join(' ');
 }
 
+function dashAreaPts(data, slotCount, toY) {
+  const top = dashLinePts(data, slotCount, toY);
+  if (!top) return '';
+  const parts = top.split(' ');
+  const x0 = parts[0].split(',')[0];
+  const x1 = parts[parts.length - 1].split(',')[0];
+  return `${x0},100 ${top} ${x1},100`;
+}
+
 function formatDashAxisK(val) {
   const n = Number(val) || 0;
   const abs = Math.abs(n);
@@ -4075,6 +4089,7 @@ function formatDashAxisK(val) {
 /** SolarAssistant-aligned labels (dashboard tab). */
 const SA_LABELS = {
   pv: 'PV',
+  pvUnshaded: 'PV no shading',
   load: 'Consumption',
   gridUsed: 'Grid Used',
   gridExport: 'Grid export',
@@ -4615,6 +4630,7 @@ function renderForecast() {
 
   // Forecast chart: native Open-Meteo q15 PV (pv_forecast_q15), no hourly interpolation.
   const pvForecastKw = forecastPvQ15ToKw(day);
+  const pvUnshadedKw = forecastPvQ15ToKw(day, 'pv_unshaded_q15');
   const loadForecastKw = forecastLoadQ15ToKw(day);
 
   let pvActualKw = null;
@@ -4649,6 +4665,7 @@ function renderForecast() {
   const fcAEl = document.getElementById('fc-chart-area');
   const allVals = [
     ...pvForecastKw,
+    ...pvUnshadedKw,
     ...(pvActualKw || []),
     ...loadForecastKw,
     ...(loadActualKw || []),
@@ -4665,12 +4682,14 @@ function renderForecast() {
     return Math.max(2, Math.round(100 - t * 96));
   }
 
+  const pvUnshaded     = document.getElementById('fc-pv-unshaded');
   const pvLine         = document.getElementById('fc-pv-line');
   const pvLineActual   = document.getElementById('fc-pv-line-actual');
   const lineForecast   = document.getElementById('fc-load-line-forecast');
   const lineActual     = document.getElementById('fc-load-line-actual');
   const socLine        = document.getElementById('fc-soc-line');
   const socLineActual  = document.getElementById('fc-soc-line-actual');
+  if (pvUnshaded)   pvUnshaded.setAttribute('points',     dashAreaPts(pvUnshadedKw, slotCount, fcToY));
   if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecastKw, slotCount, fcToY));
   if (pvLineActual) pvLineActual.setAttribute('points',   showActual && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
   if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecastKw, slotCount, fcToY));
@@ -4706,6 +4725,7 @@ function renderForecast() {
     const hidden = window._fcLegendHidden;
     const show = (key) => !hidden || !hidden.has(key);
     let html = '';
+    if (show('pv-unshaded') && pvUnshadedKw[slot] != null) html += tooltipRowLine('#fbbf24', false, SA_LABELS.pvUnshaded, fmtChartK(pvUnshadedKw[slot]));
     if (show('pv-forecast') && pvForecastKw[slot] != null) html += tooltipRowLine('#f59e0b', false, SA_LABELS.pvForecast, fmtChartK(pvForecastKw[slot]));
     if (show('pv-actual') && showActual && pvActualKw?.[slot] != null) html += tooltipRowLine('#fbbf24', true, SA_LABELS.pvActual, fmtChartK(pvActualKw[slot]));
     if (show('load-forecast') && loadForecastKw[slot] != null) html += tooltipRowLine('#60a5fa', false, SA_LABELS.loadForecast, fmtChartK(loadForecastKw[slot]));
@@ -5300,7 +5320,7 @@ async function refreshForecastOverridesPlan() {
       const date = document.getElementById('sim-date')?.value;
       const res = await fetch('api/forecast/recompute-pv?date=' + encodeURIComponent(date), { method: 'POST' });
       const body = await res.json();
-      if (body?.ok) pastPvRecalc = { date, q15: body.pv_forecast_q15 };
+      if (body?.ok) pastPvRecalc = { date, q15: body.pv_forecast_q15, unshaded: body.pv_unshaded_q15 };
       else console.warn('past-day PV recompute', body?.error);
       renderForecast();
       return;
@@ -7589,6 +7609,7 @@ function bindAcrChartLegend() {
 
 function getFcChartLegendItems() {
   return [
+    { key: 'pv-unshaded', label: 'PV no shading', swatch: acrLegendSwatch('rgba(251,191,36,0.35)') },
     { key: 'pv-forecast', label: 'PV forecast', swatch: acrLegendLineSwatch('#f59e0b', false) },
     { key: 'pv-actual', label: 'PV actual', swatch: acrLegendLineSwatch('#fbbf24', true) },
     { key: 'load-forecast', label: 'Consumption forecast', swatch: acrLegendLineSwatch('#60a5fa', false) },
@@ -7614,6 +7635,7 @@ function applyFcChartLegendVisibility() {
     el.style.display = show(key) ? '' : 'none';
   };
 
+  setDisplay(document.getElementById('fc-pv-unshaded'), 'pv-unshaded');
   setDisplay(document.getElementById('fc-pv-line'), 'pv-forecast');
   setDisplay(document.getElementById('fc-pv-line-actual'), 'pv-actual');
   setDisplay(document.getElementById('fc-load-line-forecast'), 'load-forecast');

@@ -751,6 +751,22 @@ def backfill_all_stored_ea_rce(cfg: dict) -> dict[str, Any]:
     }
 
 
+def _attach_unshaded_pv(payload: dict[str, Any], cfg: dict, date_str: str) -> None:
+    """Add mask-free PV q15 for the chart. Does not write the archive."""
+    forecast = payload.get("forecast")
+    if not isinstance(forecast, dict) or forecast.get("pv_unshaded_q15"):
+        return
+    radiation = forecast.get("pv_radiation")
+    if not radiation:
+        return
+    shaded = list(forecast.get("pv_q15") or [])
+    unshaded = forecast_mod.unshaded_pv_q15(
+        cfg, date_str, radiation, shaded_effective=shaded or None,
+    )
+    if unshaded is not None:
+        forecast["pv_unshaded_q15"] = unshaded
+
+
 async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     """Read-only EA day view for a past Warsaw date.
 
@@ -772,6 +788,7 @@ async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
         out["today_date"] = date_str
         out["history_view"] = True
         out["history_source"] = "archive"
+        _attach_unshaded_pv(out, cfg, date_str)
         out.setdefault("rows", [])
         out.setdefault("plan_from_hour", 24)
         out["has_history_rows"] = bool(out.get("history_rows"))

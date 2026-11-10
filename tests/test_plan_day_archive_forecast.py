@@ -61,9 +61,10 @@ def test_past_day_recompute_uses_archived_radiation_without_writes(monkeypatch):
     monkeypatch.setattr(data_routes, "load_config", lambda: {"solar": {}})
     seen = {}
 
-    def fake_q15(cfg, rad, date_str):
+    def fake_q15(cfg, rad, date_str, apply_horizon_mask=True):
         seen["args"] = (rad, date_str)
-        return [0.25] * 96
+        seen["mask"] = apply_horizon_mask
+        return [0.25] * 96 if apply_horizon_mask else [0.4] * 96
 
     def forbid(*_a, **_k):
         raise AssertionError("past-day recompute must not write")
@@ -75,5 +76,6 @@ def test_past_day_recompute_uses_archived_radiation_without_writes(monkeypatch):
     out = asyncio.run(data_routes.api_forecast_recompute_pv(date="2026-11-07"))
     assert out["ok"] is True
     assert out["pv_forecast_q15"] == [0.25] * 96
+    assert out["pv_unshaded_q15"] == [0.4] * 96
     assert out["pv_total"] == 24.0
     assert seen["args"] == (radiation, "2026-11-07")

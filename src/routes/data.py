@@ -174,8 +174,17 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
         radiation = archived.get("pv_radiation") or (fc.day_forecast_snapshot(date) or {}).get("pv_radiation")
         if not radiation:
             return {"ok": False, "date": date, "error": "no stored radiation for this day"}
-        q15 = await asyncio.to_thread(forecast_mod.pv_q15_from_radiation, load_config(), radiation, date)
-        return {"ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2)}
+        cfg = load_config()
+        q15 = await asyncio.to_thread(forecast_mod.pv_q15_from_radiation, cfg, radiation, date)
+        unshaded = await asyncio.to_thread(
+            forecast_mod.unshaded_pv_q15, cfg, date, radiation, shaded_base=q15,
+        )
+        body: dict[str, Any] = {
+            "ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2),
+        }
+        if unshaded is not None:
+            body["pv_unshaded_q15"] = unshaded
+        return body
     cache = await forecast_mod.recompute_pv_from_cached_radiation(load_config())
     days = cache.get("days") or {}
     return {
