@@ -353,16 +353,49 @@ def replay_day_plan_with_timer_overrides(
         if idle_gaps:
             block_controls = [HourControl(0.0, 0.0, False) for _ in range(slice_len)]
         else:
+            # A gap that ends at midnight still optimizes through the next peak,
+            # so grid charge stays in the last offpeak hour. Only this gap is kept.
+            opt_pv = list(pv_q[global_step:global_step + slice_len])
+            opt_load = list(load_q[global_step:global_step + slice_len])
+            opt_buy = list(buy_q[global_step:global_step + slice_len])
+            opt_end = end_dt
+            reaches_midnight = global_step + slice_len >= 24 * Q15_PER_HOUR
+            if reaches_midnight and opt_buy:
+                from .g12_pricing import get_buy_price
+                from .plan_q15 import split_energy_hourly_to_q15
+
+                offpeak_buy = get_buy_price(start_dt.replace(hour=3), cfg)[0]
+                if opt_buy[-1] <= offpeak_buy + epsilon:
+                    tom = start_dt + timedelta(days=1)
+                    tom_pv_q = split_energy_hourly_to_q15(
+                        [float(v) for v in (tomorrow_pv or [])]
+                    )
+                    tom_load_q = split_energy_hourly_to_q15(
+                        [float(v) for v in (tomorrow_load or [])]
+                    )
+                    for hour in range(24):
+                        price = get_buy_price(tom.replace(hour=hour), cfg)[0]
+                        base = hour * Q15_PER_HOUR
+                        opt_pv.extend(
+                            tom_pv_q[base:base + Q15_PER_HOUR] or [0.0] * Q15_PER_HOUR
+                        )
+                        opt_load.extend(
+                            tom_load_q[base:base + Q15_PER_HOUR] or [0.0] * Q15_PER_HOUR
+                        )
+                        opt_buy.extend([price] * Q15_PER_HOUR)
+                        opt_end = tom.replace(hour=hour, minute=45)
+                        if price > offpeak_buy + epsilon:
+                            break
             block_controls = optimize_horizon(
-                steps=slice_len,
-                pv_series=pv_q[global_step:global_step + slice_len],
-                load_series=load_q[global_step:global_step + slice_len],
-                buy_prices=buy_q[global_step:global_step + slice_len],
+                steps=len(opt_pv),
+                pv_series=opt_pv,
+                load_series=opt_load,
+                buy_prices=opt_buy,
                 rce_series=rce_q,
                 initial_soc_kwh=soc,
                 cfg=cfg,
                 params=params,
-                end_dt=end_dt,
+                end_dt=opt_end,
                 today_date=today_date,
                 rce_map={},
                 forecast=forecast,

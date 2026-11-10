@@ -228,3 +228,61 @@ def test_manual_discharge_exports_down_to_cap_not_reserve():
     end_soc = float(out["q15_by_hour"][17][-1]["soc_end"])
     assert exported > 15.0, exported
     assert 9.5 <= end_soc <= 10.5, end_soc
+
+
+def test_midnight_gap_does_not_charge_at_the_open_of_offpeak():
+    """After a manual Dis, night charge stays before the morning peak, not at 22:00."""
+    from src.plan_timer_override import replay_day_plan_with_timer_overrides
+
+    cfg = {
+        "battery": {"capacity_kwh": 50.0, "max_discharge_power_kw": 8.0, "max_charge_power_kw": 5.0},
+        "inverter": {"ac_capacity_kw": 8.0},
+        "simulation": {
+            "min_soc_pct": 10,
+            "epsilon_kwh": 0.05,
+            "losses_pct": {
+                "grid_to_battery": 0.0,
+                "battery_to_load_or_grid": 0.0,
+                "pv_to_battery": 0.0,
+                "pv_to_grid": 0.0,
+                "pv_to_load": 0.0,
+            },
+        },
+        "grid": {
+            "g12": {
+                "offpeak_price_pln_kwh": 0.62,
+                "offpeak_energy_only_pln_kwh": 0.45,
+                "peak_price_pln_kwh": 0.9,
+                "peak_energy_only_pln_kwh": 0.7,
+            },
+            "feed_in_price_pln": 0.3,
+        },
+    }
+    buy_q: list[float] = []
+    for hour in range(24):
+        cheap = hour < 6 or hour >= 22 or 13 <= hour < 15
+        buy_q.extend([0.62 if cheap else 0.9] * 4)
+    tomorrow_load = [0.2] * 24
+    for hour in range(6, 13):
+        tomorrow_load[hour] = 1.5
+    out = replay_day_plan_with_timer_overrides(
+        {"q15_by_hour": {15: [{"soc_end": 30.0, "quarter": 3}]}, "q15_plan_rows": []},
+        {16: "Dis 16:00-17:00 8kW cap20%"},
+        date_str="2026-11-10",
+        pv_q=[0.0] * 96,
+        load_q=[0.0] * 96,
+        buy_q=buy_q,
+        rce_q=[0.4] * 96,
+        cfg=cfg,
+        from_hour=16,
+        initial_soc_kwh=30.0,
+        tomorrow_pv=[0.0] * 24,
+        tomorrow_load=tomorrow_load,
+        forecast={
+            "today": {"pv": [0.0] * 24, "load": [0.0] * 24},
+            "tomorrow": {"pv": [0.0] * 24, "load": tomorrow_load},
+        },
+    )
+    for hour in (22, 23):
+        imported = sum(float(s["grid_import"]) for s in out["q15_by_hour"][hour])
+        assert imported < 0.2, (hour, imported)
