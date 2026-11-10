@@ -55,6 +55,8 @@ class HourControl:
     grid_charge_kw: float
     battery_export_kwh: float
     load_from_grid: bool = False
+    # Manual Dis cap (percent of capacity). Export floor for this step; None keeps the reserve.
+    discharge_cap_pct: float | None = None
 
 
 @dataclass

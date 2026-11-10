@@ -24,6 +24,7 @@ def test_hour_control_discharge_segment():
     ctrl = hour_control_from_timer_override(19, 2, txt)
     assert ctrl.grid_charge_kw == 0.0
     assert ctrl.battery_export_kwh > 0
+    assert ctrl.discharge_cap_pct == 16.0
 
 
 def test_is_timer_schedule_hour_editable_future_only():
@@ -174,3 +175,56 @@ def test_grid_charge_with_load_priority():
     soc_end = float(slots[-1]["soc_end"])
     assert soc_end < start_soc
     assert soc_end > 15.0
+
+
+def test_manual_discharge_exports_down_to_cap_not_reserve():
+    """A manual Dis slot sells down to its cap while later load would hold a higher reserve."""
+    from src.plan_timer_override import replay_day_plan_with_timer_overrides
+
+    cfg = {
+        "battery": {"capacity_kwh": 50.0, "max_discharge_power_kw": 8.0, "max_charge_power_kw": 5.0},
+        "inverter": {"ac_capacity_kw": 8.0},
+        "simulation": {
+            "min_soc_pct": 10,
+            "epsilon_kwh": 0.05,
+            "losses_pct": {
+                "grid_to_battery": 0.0,
+                "battery_to_load_or_grid": 0.0,
+                "pv_to_battery": 0.0,
+                "pv_to_grid": 0.0,
+                "pv_to_load": 0.0,
+            },
+        },
+        "grid": {
+            "g12": {
+                "offpeak_price_pln_kwh": 0.62,
+                "offpeak_energy_only_pln_kwh": 0.45,
+                "peak_price_pln_kwh": 0.9,
+                "peak_energy_only_pln_kwh": 0.7,
+            },
+            "feed_in_price_pln": 0.3,
+        },
+    }
+    start_soc = 30.0
+    load_q = [0.0] * 96
+    for step in range(18 * 4, 24 * 4):
+        load_q[step] = 1.5
+    timer = "Dis {h:02d}:00-{t:02d}:00 8kW cap20%"
+    out = replay_day_plan_with_timer_overrides(
+        {"q15_by_hour": {14: [{"soc_end": start_soc, "quarter": 3}]}, "q15_plan_rows": []},
+        {h: timer.format(h=h, t=h + 1) for h in (15, 16, 17)},
+        date_str="2026-11-10",
+        pv_q=[0.0] * 96,
+        load_q=load_q,
+        buy_q=[0.9] * 96,
+        rce_q=[1.0] * 96,
+        cfg=cfg,
+        from_hour=15,
+        initial_soc_kwh=start_soc,
+    )
+    exported = sum(
+        float(s["grid_export"]) for h in (15, 16, 17) for s in out["q15_by_hour"][h]
+    )
+    end_soc = float(out["q15_by_hour"][17][-1]["soc_end"])
+    assert exported > 15.0, exported
+    assert 9.5 <= end_soc <= 10.5, end_soc

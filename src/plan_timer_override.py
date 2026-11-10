@@ -119,6 +119,7 @@ def hour_control_from_timer_override(
     slot_end = slot_start + 15
     grid_charge_kw = 0.0
     battery_export_kwh = 0.0
+    discharge_cap_pct: float | None = None
     # House load stays on battery (load priority); grid import is charge only.
     load_from_grid = False
 
@@ -134,8 +135,11 @@ def hour_control_from_timer_override(
             grid_charge_kw = max(grid_charge_kw, power * step_scale)
         elif seg["kind"] == "dis":
             battery_export_kwh = max(battery_export_kwh, power * step_scale)
+            discharge_cap_pct = float(seg["capacity_pct"])
 
-    return HourControl(grid_charge_kw, battery_export_kwh, load_from_grid)
+    return HourControl(
+        grid_charge_kw, battery_export_kwh, load_from_grid, discharge_cap_pct,
+    )
 
 
 def _soc_at_hour_start(plan: dict[str, Any], hour: int) -> float | None:
@@ -274,6 +278,9 @@ def replay_day_plan_with_timer_overrides(
                     break
                 reserve = reserves[reserve_idx] if reserve_idx < len(reserves) else min_kwh
                 ctrl = hour_control_from_timer_override(h, q, timer_txt)
+                # Manual Dis exports down to its cap. The self-use reserve stays for other hours.
+                if ctrl.discharge_cap_pct is not None:
+                    reserve = max(min_kwh, battery_cap * ctrl.discharge_cap_pct / 100.0)
                 phys = simulate_hour(
                     soc, pv_q[global_step], load_q[global_step], ctrl,
                     battery_cap=battery_cap,
