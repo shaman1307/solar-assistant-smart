@@ -48,6 +48,7 @@ grid:
     offpeak_energy_only_pln_kwh: 0.4
   grid_export_threshold_pln_kwh: 0.5
   export_window_start_hour: 16
+  super_rce_min_pln_kwh: 2.0
   distribution:
     # G12 official tariff table 2 (ROZLICZENIE DYSTRYBUCJI), netto × 1.23 brutto
     subscription_pln_month: 0.9102

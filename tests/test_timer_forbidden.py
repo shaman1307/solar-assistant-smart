@@ -75,14 +75,10 @@ def test_simulation_drops_forbidden_charge_and_timer():
     ) == ""
 
 
-def test_override_day_drops_forbidden_charge_in_optimized_gap(monkeypatch):
-    """A manual cell keeps its own slot. Optimized hours around it still obey forbid."""
+def test_override_day_drops_forbidden_charge_on_horizon_controls():
+    """A manual cell keeps its own slot. Other hours keep the horizon plan and still obey forbid."""
     import src.plan_timer_override as override_mod
 
-    def _charge_everywhere(*, steps, **_kwargs):
-        return [HourControl(1.0, 0.0)] * steps
-
-    monkeypatch.setattr(override_mod, "optimize_horizon", _charge_everywhere)
     cfg = {
         "battery": {"capacity_kwh": 47.6, "max_charge_power_kw": 5.8},
         "simulation": {"min_soc_pct": 16},
@@ -101,8 +97,20 @@ def test_override_day_drops_forbidden_charge_in_optimized_gap(monkeypatch):
         },
     }
     n = 24 * 4
+    horizon = {
+        hour: [
+            {
+                "quarter": q,
+                "grid_charge_kw": 1.0,
+                "ctrl_battery_export_kwh": 0.0,
+                "load_from_grid": False,
+            }
+            for q in range(4)
+        ]
+        for hour in (2, 3, 4)
+    }
     plan = override_mod.replay_day_plan_with_timer_overrides(
-        {"q15_by_hour": {}, "q15_plan_rows": []},
+        {"q15_by_hour": horizon, "q15_plan_rows": []},
         {1: "Chg 01:00-02:00 4.0kW cap30%"},
         date_str="2026-11-08",
         pv_q=[0.0] * n,

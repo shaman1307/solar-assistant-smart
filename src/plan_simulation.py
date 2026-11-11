@@ -849,6 +849,38 @@ async def build_past_day_simulation(cfg: dict, date_str: str) -> dict[str, Any]:
     }
 
 
+def simulation_rows_for_date(plan: dict, day: str) -> list[dict]:
+    """Plan rows for *day*, plus tomorrow remainder hours the horizon did not simulate."""
+    rows = [
+        r for r in (plan.get("rows") or [])
+        if str(r.get("plan_date") or "") == day and r.get("start") != "TOTAL"
+    ]
+    seen = {int(r["hour"]) for r in rows if r.get("hour") is not None}
+    for r in plan.get("tomorrow_remainder_rows") or []:
+        if str(r.get("plan_date") or "") != day:
+            continue
+        hour = r.get("hour")
+        if hour is not None and int(hour) in seen:
+            continue
+        rows.append(r)
+    rows.sort(key=lambda r: int(r.get("hour") or 0))
+    return rows
+
+
+def simulation_view_for_date(plan: dict, day: str) -> dict[str, Any]:
+    """Live plan limited to one calendar day. *today_date* stays the real today."""
+    rows = simulation_rows_for_date(plan, day)
+    out = dict(plan)
+    out["rows"] = rows
+    out["history_rows"] = []
+    out["history_view"] = False
+    out["view_date"] = day
+    out["totals"] = compute_plan_totals(rows)
+    out["tomorrow_remainder_rows"] = []
+    out["has_tomorrow_remainder"] = False
+    return out
+
+
 async def get_simulation_for_date(
     cfg: dict,
     date_str: str | None = None,
@@ -856,23 +888,25 @@ async def get_simulation_for_date(
     refresh: bool = False,
     unlock_plan_soc: bool = False,
 ) -> dict[str, Any]:
-    """Today → live plan; past date → archive / Influx history view.
+    """Today → live plan; tomorrow → that plan's next-day rows; past date → archive.
 
     *unlock_plan_soc*: replace the frozen as-if-00:00 solid SOC curve (Forecast
     Overrides Refresh / config). Ignored unless *refresh* is True.
     """
     now = now_warsaw()
     today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     day = (date_str or today).strip()
     if len(day) != 10:
         day = today
-    if day > today:
+    if day > tomorrow:
         day = today
-    if day == today:
+    if day == today or day == tomorrow:
         if refresh:
-            out = await hourly_plan_refresh(cfg, unlock_plan_soc=unlock_plan_soc)
+            live = await hourly_plan_refresh(cfg, unlock_plan_soc=unlock_plan_soc)
         else:
-            out = await build_plan_simulation(cfg, invalidate_inputs=False)
+            live = await build_plan_simulation(cfg, invalidate_inputs=False)
+        out = live if day == today else simulation_view_for_date(live, day)
     else:
         out = await build_past_day_simulation(cfg, day)
     from .g12_pricing import g12_buy_energy_price_pln_kwh

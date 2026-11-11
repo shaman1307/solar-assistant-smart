@@ -1,7 +1,7 @@
 """2026-09-14 replay: inverter actuals H00–H09, plan from H10.
 
-At 09:45 the rolling optimizer started at H10. Leftover export must stay closed
-because H08 PV already covers house load. Snapshot from Pi 2026-09-14.
+Morning hours stay in the sale window when PV covers the house. Snapshot
+from Pi 2026-09-14.
 """
 
 from __future__ import annotations
@@ -153,16 +153,19 @@ def _export_window(cfg: dict, pv: list[float], load: list[float]) -> set[int]:
     )
 
 
-def test_sep14_h10_not_in_export_window_with_inverter_morning():
-    """H08 actual PV covers load; leftover must not reopen at H10."""
+def test_sep14_h10_stays_in_export_window_when_pv_covers():
+    """H08 PV covers load; H08–H12 and evening peak H15 stay in the sale window."""
     cfg = _cfg()
     pv, load = _today_hourly()
     window = _export_window(cfg, pv, load)
-    assert 8 not in window
-    assert 9 not in window
-    assert 10 not in window
-    assert 11 not in window
-    assert 15 not in window
+    assert 8 in window
+    assert 9 in window
+    assert 10 in window
+    assert 11 in window
+    assert 12 in window
+    assert 13 not in window
+    assert 14 not in window
+    assert 15 in window
     assert 16 in window
 
 

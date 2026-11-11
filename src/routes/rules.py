@@ -117,15 +117,38 @@ async def api_set_timed_power(body: dict) -> dict[str, Any]:
     }
 
 
+def _smart_mode_name(cfg: dict) -> str:
+    if not cfg.get("smart_mode_enabled", False):
+        return "off"
+    if cfg.get("smart_plus_enabled", False):
+        return "smart_plus"
+    return "smart"
+
+
+def _apply_smart_mode_name(cfg: dict, mode: str) -> str:
+    name = mode if mode in ("off", "smart", "smart_plus") else "off"
+    cfg["smart_mode_enabled"] = name != "off"
+    cfg["smart_plus_enabled"] = name == "smart_plus"
+    return name
+
+
 @router.post("/api/smart-mode")
 async def api_set_smart_mode(body: dict) -> dict[str, Any]:
     cfg = load_config()
-    was_enabled = bool(cfg.get("smart_mode_enabled", False))
-    enabled = bool(body.get("enabled", False))
-    cfg["smart_mode_enabled"] = enabled
+    previous = _smart_mode_name(cfg)
+    if "mode" in body:
+        mode = _apply_smart_mode_name(cfg, str(body.get("mode") or "off"))
+    else:
+        enabled = bool(body.get("enabled", False))
+        mode = _apply_smart_mode_name(cfg, "smart" if enabled else "off")
     save_config(cfg)
-    result: dict[str, Any] = {"ok": True, "enabled": enabled}
-    if enabled and not was_enabled:
+    result: dict[str, Any] = {
+        "ok": True,
+        "enabled": mode != "off",
+        "mode": mode,
+        "smart_plus": mode == "smart_plus",
+    }
+    if mode != previous:
         result["initial_sync"] = await run_hourly_plan_sync()
     return result
 
@@ -133,7 +156,12 @@ async def api_set_smart_mode(body: dict) -> dict[str, Any]:
 @router.get("/api/smart-mode")
 async def api_get_smart_mode() -> dict[str, Any]:
     cfg = load_config()
-    return {"enabled": bool(cfg.get("smart_mode_enabled", False))}
+    mode = _smart_mode_name(cfg)
+    return {
+        "enabled": mode != "off",
+        "mode": mode,
+        "smart_plus": mode == "smart_plus",
+    }
 
 
 @router.post("/api/rules/apply-plan")

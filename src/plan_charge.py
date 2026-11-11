@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from .plan_physics import HourControl, simulate_hour, slots_per_hour_from_scale
+
+# Smart+ leaves the morning charge unchanged when SOC at the first counted
+# super hour is already above this. The added DC is cut so that hour stays
+# at or under the cap.
+SUPERCHARGE_SKIP_ABOVE_SOC_PCT = 90.0
+SUPERCHARGE_CAP_SOC_PCT = 95.0
 
 def grid_charge_ac_kw(
     soc_kwh: float,
@@ -54,6 +62,30 @@ def battery_grid_charge_step_ac(
     return float(charge_ac_step)
 
 
+def offpeak_windows_before_peak(
+    n_steps: int,
+    is_peak: Callable[[int], bool],
+    scan_from: int,
+) -> list[tuple[int, int]]:
+    """Offpeak runs that end at a peak step. A run with no following peak is omitted."""
+    windows: list[tuple[int, int]] = []
+    i = max(0, int(scan_from))
+    n = int(n_steps)
+    while i < n:
+        if is_peak(i):
+            i += 1
+            continue
+        start = i
+        while i < n and not is_peak(i):
+            i += 1
+        if i >= n:
+            break
+        windows.append((start, i))
+        while i < n and is_peak(i):
+            i += 1
+    return windows
+
+
 def plan_battery_grid_charge(
     controls: list[HourControl],
     *,
@@ -79,6 +111,7 @@ def plan_battery_grid_charge(
     skip_leading_slots: int | None = None,
     min_block_minutes: int | None = None,
     min_hourly_kwh: float = 0.0,
+    preserve_export: bool = False,
 ) -> list[HourControl]:
     """Plan battery grid-charge slots: fill the last offpeak hour(s) before each peak.
 
@@ -140,24 +173,14 @@ def plan_battery_grid_charge(
         )
         return phys.soc_end
 
+    def _kept_export(prev: HourControl) -> float:
+        return float(prev.battery_export_kwh) if preserve_export else 0.0
+
     # Skip a peak the horizon already sits in, then each offpeak that ends at a peak.
     scan_from = fill_from_step
     while scan_from < len(controls) and _is_peak(scan_from):
         scan_from += 1
-    windows: list[tuple[int, int]] = []
-    i = scan_from
-    while i < len(controls):
-        if _is_peak(i):
-            i += 1
-            continue
-        start = i
-        while i < len(controls) and not _is_peak(i):
-            i += 1
-        if i >= len(controls):
-            break
-        windows.append((start, i))
-        while i < len(controls) and _is_peak(i):
-            i += 1
+    windows = offpeak_windows_before_peak(len(controls), _is_peak, scan_from)
 
     step_ac = battery_grid_charge_step_ac(
         charge_ac_step,
@@ -174,7 +197,9 @@ def plan_battery_grid_charge(
         for step in range(cursor, start):
             prev = controls[step]
             charge_kw = 0.0 if step < fill_from_step else float(prev.grid_charge_kw)
-            soc = _play(soc, step, HourControl(charge_kw, 0.0, prev.load_from_grid))
+            soc = _play(
+                soc, step, HourControl(charge_kw, _kept_export(prev), prev.load_from_grid),
+            )
         idle_soc = soc
         idle_grid: dict[int, float] = {}
         for step in range(start, peak):
@@ -291,12 +316,13 @@ def plan_battery_grid_charge(
     out: list[HourControl] = []
     soc = float(initial_soc_kwh)
     for step, prev in enumerate(controls):
+        export_kwh = _kept_export(prev)
         if step < fill_from_step:
-            ctrl = HourControl(0.0, 0.0, False)
+            ctrl = HourControl(0.0, export_kwh, False)
         elif managed[step]:
-            ctrl = HourControl(float(fill_kw[step]), 0.0, False)
+            ctrl = HourControl(float(fill_kw[step]), export_kwh, False)
         else:
-            ctrl = HourControl(prev.grid_charge_kw, 0.0, prev.load_from_grid)
+            ctrl = HourControl(prev.grid_charge_kw, export_kwh, prev.load_from_grid)
         soc = _play(soc, step, ctrl)
         out.append(ctrl)
     return out
@@ -372,4 +398,225 @@ def offpeak_min_block_charge_is_worth(
     charge_ac = need if need + epsilon >= floor or floor <= epsilon else floor
     cost_charge = charge_ac * off
     return cost_charge <= cost_avoided + epsilon
+
+
+def supercharge_counted_hours(
+    *,
+    end_hour: int,
+    rce_series: list[float | None],
+    slots_per_hour: int,
+    horizon_hours: list[int],
+    min_price: float,
+    export_window_start_hour: int,
+    cfg: dict[str, Any] | None,
+    today_date,
+) -> list[int]:
+    """Hours in the 24h after *end_hour* whose mean RCE is at least *min_price*.
+
+    Morning-peak hours that a later evening hour outranks are omitted. The
+    drop uses the same ratings as battery export, including published RCE
+    past the horizon.
+    """
+    from .plan_export import (
+        hour_rce_rating,
+        hourly_avg_rce,
+        morning_peak_hours_below_later_evening,
+    )
+
+    slots = max(1, int(slots_per_hour))
+    start = int(end_hour)
+    stop = start + 24
+    ratings: dict[int, float] = {}
+    priced: list[int] = []
+    for hour in range(start, stop):
+        avg = hourly_avg_rce(rce_series, hour, slots_per_hour=slots)
+        rating = hour_rce_rating(rce_series, hour, slots_per_hour=slots)
+        if avg is None or rating is None or float(avg) + 1e-9 < float(min_price):
+            continue
+        ratings[int(hour)] = float(rating)
+        priced.append(int(hour))
+    window_start = int(export_window_start_hour)
+    for hour in horizon_hours:
+        clock = int(hour) % 24
+        if clock < window_start or int(hour) in ratings:
+            continue
+        rating = hour_rce_rating(rce_series, int(hour), slots_per_hour=slots)
+        if rating is not None:
+            ratings[int(hour)] = float(rating)
+    if not ratings:
+        return []
+    dropped = morning_peak_hours_below_later_evening(
+        ratings,
+        hours=list(horizon_hours),
+        rce_series=rce_series,
+        slots_per_hour=slots,
+        export_window_start_hour=window_start,
+        cfg=cfg,
+        today_date=today_date,
+    )
+    return [hour for hour in priced if hour not in dropped]
+
+
+def apply_morning_supercharge(
+    controls: list[HourControl],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    buy_prices: list[float],
+    offpeak_buy: float,
+    charge_targets: list[float],
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    charge_ac_step: float,
+    discharge_dc_step: float,
+    inverter_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    step_scale: float,
+    rce_series: list[float | None],
+    rce_step_offset: int,
+    export_window_start_hour: int,
+    cfg: dict[str, Any],
+    today_date,
+    skip_leading_slots: int | None = None,
+    min_block_minutes: int | None = None,
+    min_hourly_kwh: float = 0.0,
+) -> list[HourControl]:
+    """Add Smart+ DC on a morning offpeak window that already has grid charge.
+
+    Counted hours are the next 24h after that window's peak with mean RCE at
+    or above grid.super_rce_min_pln_kwh, minus morning peaks a later evening
+    hour outranks. Extra battery DC is timer discharge kW times that count,
+    cut so SOC at the first counted hour stays at or under 95%. Grid AC for
+    the extra DC is DC / eta_grid inside the charge pass. Skip the window
+    when that SOC is already above 90%, or when the window has no charge.
+    """
+    from .g12_pricing import get_g12_zone
+    from .grid_config import super_rce_min_pln_kwh
+    from .plan_dp import dp_step_clock
+    from .simulation_config import plan_timer_discharge_power_kw
+
+    if not controls or not cfg.get("smart_plus_enabled"):
+        return controls
+
+    slots = slots_per_hour_from_scale(step_scale)
+    if skip_leading_slots is None:
+        fill_from = slots
+    else:
+        fill_from = min(len(controls), max(0, int(skip_leading_slots)))
+
+    def _is_peak(step: int) -> bool:
+        price = float(buy_prices[step] if step < len(buy_prices) else offpeak_buy)
+        return price > offpeak_buy + eps_step
+
+    def _play(soc_kwh: float, step: int, ctrl: HourControl) -> float:
+        pv = float(pv_series[step]) if step < len(pv_series) else 0.0
+        load = float(load_series[step]) if step < len(load_series) else 0.0
+        reserve = float(reserves[step]) if step < len(reserves) else min_kwh
+        phys = simulate_hour(
+            soc_kwh, pv, load, ctrl,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            ac_cap_kw=inverter_ac_step,
+            discharge_dc_cap_kwh=discharge_dc_step,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
+            epsilon=eps_step,
+            reserve_soc_kwh=reserve,
+        )
+        return phys.soc_end
+
+    scan_from = fill_from
+    while scan_from < len(controls) and _is_peak(scan_from):
+        scan_from += 1
+    windows = offpeak_windows_before_peak(len(controls), _is_peak, scan_from)
+    horizon_hours = sorted({
+        (int(rce_step_offset) + i) // slots for i in range(len(controls))
+    })
+    # Morning pre-peak target stays on this list so a later charge pass
+    # (after the sale) still packs the supercharge.
+    targets = charge_targets
+    min_price = super_rce_min_pln_kwh(cfg)
+    discharge_kw = plan_timer_discharge_power_kw(cfg)
+    out = controls
+
+    for start, peak in windows:
+        clock = dp_step_clock(
+            today_date, peak,
+            rce_step_offset=int(rce_step_offset), slots_per_hour=slots,
+        )
+        if clock.hour >= 12 or get_g12_zone(clock, cfg) != "peak":
+            continue
+        charged = sum(
+            float(out[step].grid_charge_kw)
+            for step in range(max(start, fill_from), peak)
+            if step < len(out)
+        )
+        if charged <= eps_step:
+            continue
+        end_hour = (int(rce_step_offset) + peak) // slots
+        counted = supercharge_counted_hours(
+            end_hour=end_hour,
+            rce_series=rce_series,
+            slots_per_hour=slots,
+            horizon_hours=horizon_hours,
+            min_price=min_price,
+            export_window_start_hour=int(export_window_start_hour),
+            cfg=cfg,
+            today_date=today_date,
+        )
+        if not counted:
+            continue
+        first_step = counted[0] * slots - int(rce_step_offset)
+        soc = float(initial_soc_kwh)
+        for step in range(max(0, min(first_step, len(out)))):
+            prev = out[step]
+            soc = _play(soc, step, HourControl(
+                float(prev.grid_charge_kw), 0.0, prev.load_from_grid,
+            ))
+        if battery_cap > 0 and (soc / battery_cap) * 100.0 > SUPERCHARGE_SKIP_ABOVE_SOC_PCT:
+            continue
+        headroom = max(0.0, battery_cap * SUPERCHARGE_CAP_SOC_PCT / 100.0 - soc)
+        extra_dc = min(discharge_kw * len(counted), headroom)
+        if extra_dc <= eps_step:
+            continue
+        idx = min(peak - 1, len(targets) - 1)
+        if idx < 0:
+            continue
+        targets[idx] = min(float(battery_cap), float(targets[idx]) + extra_dc)
+        out = plan_battery_grid_charge(
+            out,
+            pv_series=pv_series,
+            load_series=load_series,
+            buy_prices=buy_prices,
+            offpeak_buy=offpeak_buy,
+            charge_targets=targets,
+            initial_soc_kwh=initial_soc_kwh,
+            battery_cap=battery_cap,
+            min_kwh=min_kwh,
+            charge_ac_step=charge_ac_step,
+            discharge_dc_step=discharge_dc_step,
+            inverter_ac_step=inverter_ac_step,
+            eta_grid=eta_grid,
+            eta_out=eta_out,
+            eta_pv_load=eta_pv_load,
+            eta_pv_grid=eta_pv_grid,
+            eta_pv_battery=eta_pv_battery,
+            eps_step=eps_step,
+            reserves=reserves,
+            step_scale=step_scale,
+            skip_leading_slots=skip_leading_slots,
+            min_block_minutes=min_block_minutes,
+            min_hourly_kwh=min_hourly_kwh,
+        )
+    return out
 

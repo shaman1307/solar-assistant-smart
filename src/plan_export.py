@@ -17,7 +17,6 @@ from .plan_physics import (
 )
 from .plan_reserve import (
     HOURS_PER_DAY,
-    _ALL_OFFPEAK_COVER_HOUR_END,
     morning_cover_bound_from_hour_buys,
 )
 
@@ -151,6 +150,61 @@ def _distance_to_hour_run(hour: int, selected: set[int] | list[int]) -> int:
     if h > hi:
         return h - hi
     return 0
+
+
+def morning_peak_hours_below_later_evening(
+    ratings: dict[int, float],
+    *,
+    hours: list[int],
+    rce_series: list[float | None],
+    slots_per_hour: int,
+    export_window_start_hour: int,
+    cfg: dict[str, Any] | None,
+    today_date,
+) -> set[int]:
+    """Morning-peak hours that lose to a later evening rating.
+
+    A morning G12 peak hour (peak window starting before noon) stays on the
+    house when any later evening hour rates higher. Evening hours are clock
+    hours at or after *export_window_start_hour*. Published RCE past *hours*
+    still counts. Equal ratings do not drop the morning hour.
+    """
+    if not ratings or not hours:
+        return set()
+    window_start = int(export_window_start_hour)
+    peak_windows = (
+        g12_peak_windows(cfg) if cfg is not None else [(6, 13), (15, 22)]
+    )
+    day0 = None
+    if today_date is not None:
+        day0 = today_date.date() if isinstance(today_date, datetime) else today_date
+    evening_ratings = {
+        int(e): float(r) for e, r in ratings.items()
+        if (int(e) % HOURS_PER_DAY) >= window_start
+    }
+    slots = max(1, int(slots_per_hour))
+    for e in range(int(max(hours)) + 1, len(rce_series) // slots):
+        if (e % HOURS_PER_DAY) < window_start:
+            continue
+        rating = hour_rce_rating(rce_series, e, slots_per_hour=slots)
+        if rating is not None:
+            evening_ratings[e] = float(rating)
+    dropped: set[int] = set()
+    for h, rating in ratings.items():
+        clock = int(h) % HOURS_PER_DAY
+        if not any(a <= clock < b and a < 12 for a, b in peak_windows):
+            continue
+        if cfg is not None and day0 is not None:
+            day = day0 + timedelta(days=int(h) // HOURS_PER_DAY)
+            zone_dt = datetime(day.year, day.month, day.day, clock)
+            if get_g12_zone(zone_dt, cfg) != "peak":
+                continue
+        if any(
+            e > int(h) and r > float(rating) + 1e-12
+            for e, r in evening_ratings.items()
+        ):
+            dropped.add(int(h))
+    return dropped
 
 
 def rank_hours_by_avg_rce(
@@ -353,46 +407,21 @@ def _hour_steps_in_horizon(
     return out
 
 
-def _hour_pv_covers_load(
-    hour: int,
-    *,
-    pv_series: list[float],
-    load_series: list[float],
-    rce_step_offset: int,
-    slots: int,
-    steps: int,
-    eta_pv_load: float,
-    epsilon: float,
-    forecast: dict[str, Any] | None = None,
-) -> bool:
-    """Whether this clock hour's PV covers house load (generation underway)."""
-    idxs = _hour_steps_in_horizon(
-        hour=hour, steps=steps, rce_step_offset=rce_step_offset,
-        slots_per_hour=slots,
-    )
-    if idxs:
-        pv_h = sum(float(pv_series[i]) for i in idxs)
-        load_h = sum(float(load_series[i]) for i in idxs)
+def _daytime_offpeak_clocks(cfg: dict[str, Any] | None = None) -> set[int]:
+    """Clock hours between G12 peak blocks (daytime off-peak).
+
+    Night off-peak is not in this set. With no *cfg*, use G12 13:00–15:00.
+    """
+    if cfg is not None:
+        windows = g12_peak_windows(cfg)
     else:
-        day = int(hour) // HOURS_PER_DAY
-        clock = int(hour) % HOURS_PER_DAY
-        if day == 0:
-            day_fc = (forecast or {}).get("today") or {}
-        elif day == 1:
-            day_fc = (forecast or {}).get("tomorrow") or {}
-        else:
-            return False
-        pv_list = day_fc.get("pv") or []
-        load_list = day_fc.get("load") or []
-        if clock >= len(pv_list) or clock >= len(load_list):
-            return False
-        pv_h = float(pv_list[clock] or 0.0)
-        load_h = float(load_list[clock] or 0.0)
-    if eta_pv_load <= 0:
-        return False
-    if pv_h <= float(epsilon):
-        return False
-    return pv_h * float(eta_pv_load) >= load_h - float(epsilon)
+        windows = [(6, 13), (15, 22)]
+    windows = sorted((int(a), int(b)) for a, b in windows)
+    out: set[int] = set()
+    for i in range(len(windows) - 1):
+        for clock in range(windows[i][1], windows[i + 1][0]):
+            out.add(clock % HOURS_PER_DAY)
+    return out
 
 
 def evening_export_window_hours(
@@ -411,51 +440,16 @@ def evening_export_window_hours(
     cfg: dict[str, Any] | None = None,
     today_date=None,
 ) -> set[int]:
-    """Hours from *export_window_start_hour* through overnight until PV covers load.
+    """Sale hours. Daytime off-peak between the G12 peak blocks stays out.
 
-    Midnight does not split the window. Leftover stays open until the first hour
-    where PV covers the house, looking only as far as the next G12 morning-peak
-    end. Clock hours from that bound up to (not including) the start hour stay
-    out. Cover uses the full available PV/load (forecast hourly when the
-    optimizer slice omits an hour).
+    Midnight does not split the window. Night off-peak stays in. PV covering
+    the house does not remove an hour.
     """
-    start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
-    bound = cover_bound
-    if bound is None and cfg is not None and today_date is not None:
-        tariff = g12_tariff_from_cfg(cfg)
-        bound = morning_cover_bound_from_hour_buys(
-            offpeak_buy=tariff.offpeak_full, epsilon=epsilon,
-            cfg=cfg, today_date=today_date,
-        )
-    if bound is None:
-        bound = _ALL_OFFPEAK_COVER_HOUR_END
-    bound = max(0, min(HOURS_PER_DAY, int(bound)))
+    gap = _daytime_offpeak_clocks(cfg)
     hours_set = {int(h) for h in hours}
     if not hours_set:
         return set()
-    hi = max(hours_set)
-    in_window: set[int] = set()
-    leftover_open = True
-    for h in range(0, hi + 1):
-        clock = h % HOURS_PER_DAY
-        if clock >= start:
-            leftover_open = True
-            if h in hours_set:
-                in_window.add(h)
-            continue
-        if clock < bound:
-            covered = _hour_pv_covers_load(
-                h, pv_series=pv_series, load_series=load_series,
-                rce_step_offset=rce_step_offset, slots=slots, steps=steps,
-                eta_pv_load=eta_pv_load, epsilon=epsilon, forecast=forecast,
-            )
-            if covered:
-                leftover_open = False
-            elif leftover_open and h in hours_set:
-                in_window.add(h)
-            continue
-        leftover_open = False
-    return in_window
+    return {h for h in hours_set if (h % HOURS_PER_DAY) not in gap}
 
 
 @dataclass(frozen=True)
@@ -479,19 +473,15 @@ def _same_sale_window(
     export_window_start_hour: int = 16,
     cover_bound: int | None = None,
 ) -> bool:
-    """Whether two absolute hours sit in one start-hour→morning sale window.
+    """Whether two absolute hours sit in one sale window.
 
-    Hours from the G12 morning-peak end until *export_window_start_hour* are a
-    gap, so tonight and tomorrow evening are distinct. Midnight is not a gap.
+    Daytime off-peak between the G12 peak blocks is a gap, so the morning peak
+    and the evening peak are distinct. Midnight is not a gap.
     """
-    start = max(0, min(HOURS_PER_DAY - 1, int(export_window_start_hour)))
-    bound = _ALL_OFFPEAK_COVER_HOUR_END if cover_bound is None else max(
-        0, min(HOURS_PER_DAY, int(cover_bound)),
-    )
+    gap = _daytime_offpeak_clocks(None)
     lo, hi = (int(hour_a), int(hour_b)) if int(hour_a) <= int(hour_b) else (int(hour_b), int(hour_a))
     for h in range(lo, hi + 1):
-        clock = h % HOURS_PER_DAY
-        if bound <= clock < start:
+        if (h % HOURS_PER_DAY) in gap:
             return False
     return True
 
@@ -552,7 +542,7 @@ def hold_soc_for_later_battery_grid_export_claims(
     """DC kWh to hold for a strictly richer later hour in the same window.
 
     A later cheaper hour does not shrink this one. Survive-until-morning stays
-    in the per-step reserves. A later evening across the noon gap is separate.
+    in the per-step reserves. A later evening across the daytime off-peak is separate.
     """
     if not claims:
         return 0.0
@@ -922,11 +912,10 @@ def plan_battery_grid_export(
     cfg: dict[str, Any] | None = None,
     today_date=None,
 ) -> list[HourControl]:
-    """Plan battery→grid export from the config start hour until morning PV cover.
+    """Plan battery→grid export. Daytime off-peak between the G12 peak blocks stays out.
 
-    Eligible hours are clock start–23 plus overnight until PV covers again, with
-    hourly avg-RCE (0.01) ≥ *export_floor*. Cover and leftover use the full
-    available PV/load and G12 peak/offpeak, not the optimizer hour slice.
+    Eligible hours are the other clock hours in the horizon with hourly
+    avg-RCE (0.01) at least *export_floor*.
     Each start-hour→morning window is filled in clock order so a richer next
     evening cannot skip tonight. A morning-peak hour is left out when a later
     evening hour (from the window start hour) has a higher rating anywhere in
@@ -985,38 +974,15 @@ def plan_battery_grid_export(
         grow_ratings[int(h)] = round_rce_5_groszy(avg)
     # Morning peak stays on the house when a later evening hour rates higher.
     window_start = int(export_window_start_hour)
-    peak_windows = (
-        g12_peak_windows(cfg) if cfg is not None else [(6, 13), (15, 22)]
+    drop_morning = morning_peak_hours_below_later_evening(
+        ratings,
+        hours=hours,
+        rce_series=rce_series,
+        slots_per_hour=slots,
+        export_window_start_hour=window_start,
+        cfg=cfg,
+        today_date=today_date,
     )
-    day0 = None
-    if today_date is not None:
-        day0 = today_date.date() if isinstance(today_date, datetime) else today_date
-    evening_ratings = {
-        int(e): float(r) for e, r in ratings.items()
-        if (int(e) % HOURS_PER_DAY) >= window_start
-    }
-    # Published RCE past the horizon end still outranks a morning peak.
-    for e in range(int(max(hours)) + 1, len(rce_series) // slots):
-        if (e % HOURS_PER_DAY) < window_start:
-            continue
-        rating = hour_rce_rating(rce_series, e, slots_per_hour=slots)
-        if rating is not None:
-            evening_ratings[e] = float(rating)
-    drop_morning: list[int] = []
-    for h, rating in ratings.items():
-        clock = int(h) % HOURS_PER_DAY
-        if not any(a <= clock < b and a < 12 for a, b in peak_windows):
-            continue
-        if cfg is not None and day0 is not None:
-            day = day0 + timedelta(days=int(h) // HOURS_PER_DAY)
-            zone_dt = datetime(day.year, day.month, day.day, clock)
-            if get_g12_zone(zone_dt, cfg) != "peak":
-                continue
-        if any(
-            e > int(h) and r > float(rating) + 1e-12
-            for e, r in evening_ratings.items()
-        ):
-            drop_morning.append(int(h))
     for h in drop_morning:
         ratings.pop(h, None)
         raw_avgs.pop(h, None)

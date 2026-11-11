@@ -72,6 +72,7 @@ async def api_get_config() -> dict[str, Any]:
     cfg = load_config()
     cfg.pop("_charge_rate_kw", None)
     cfg.pop("smart_mode_enabled", None)
+    cfg.pop("smart_plus_enabled", None)
     rules = await sa_client.get_rules(cfg, fresh=True)
     inv = cfg.setdefault("inverter", {})
     for key in ("to_grid_battery_capacity", "back_to_battery_capacity"):
@@ -144,6 +145,8 @@ async def api_save_config(body: dict) -> dict[str, str]:
         body["_charge_rate_kw"] = existing["_charge_rate_kw"]
     if "smart_mode_enabled" not in body and "smart_mode_enabled" in existing:
         body["smart_mode_enabled"] = existing["smart_mode_enabled"]
+    if "smart_plus_enabled" not in body and "smart_plus_enabled" in existing:
+        body["smart_plus_enabled"] = existing["smart_plus_enabled"]
     runtime = load_runtime_config()
     if "active_template" not in body and runtime.get("active_template"):
         body["active_template"] = runtime["active_template"]

@@ -695,42 +695,25 @@
       border-color: #3b82f6;
       box-shadow: 0 0 0 1px #3b82f6;
     }
-    .smart-toggle {
-      position: relative;
-      display: inline-block;
-      width: 2.75rem;
-      height: 1.5rem;
-      flex-shrink: 0;
-    }
-    .smart-toggle input {
-      position: absolute;
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
-    .smart-toggle-track {
-      position: absolute;
-      inset: 0;
-      background: #d1d5db;
+    .smart-mode-switch {
+      display: inline-flex;
+      border: 1px solid #d1d5db;
       border-radius: 9999px;
-      transition: background 0.2s ease;
+      overflow: hidden;
+      background: #f3f4f6;
     }
-    .smart-toggle input:checked + .smart-toggle-track {
+    .smart-mode-switch button {
+      border: 0;
+      background: transparent;
+      color: #4b5563;
+      font-size: 0.75rem;
+      line-height: 1;
+      padding: 0.35rem 0.7rem;
+      cursor: pointer;
+    }
+    .smart-mode-switch button.is-active {
       background: #f59e0b;
-    }
-    .smart-toggle-thumb {
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 1.25rem;
-      height: 1.25rem;
-      background: #fff;
-      border-radius: 9999px;
-      transition: transform 0.2s ease;
-      pointer-events: none;
-    }
-    .smart-toggle input:checked + .smart-toggle-track + .smart-toggle-thumb {
-      transform: translateX(1.25rem);
+      color: #fff;
     }
     .timer-schedule-table {
       --timer-cb-size: 1rem;
@@ -2888,6 +2871,10 @@
           <input name="grid.export_window_start_hour" type="number" min="0" max="23" step="1" required
             title="Clock hour when the battery→grid sale window opens. Window ends at next-day PV cover."
             class="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          <label class="text-xs text-gray-700 block font-medium pt-1" title="Hourly mean RCE at or above this counts toward Smart+ morning supercharge.">Super RCE min (PLN/kWh)</label>
+          <input name="grid.super_rce_min_pln_kwh" type="number" step="0.0001" min="0" required
+            title="Hourly mean RCE at or above this counts toward Smart+ morning supercharge."
+            class="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
         </div>
       </fieldset>
 
@@ -2985,11 +2972,11 @@
       <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Timer Schedule</h2>
       <div class="flex items-center gap-2">
         <span class="text-sm text-gray-700">Smart mode</span>
-        <label class="smart-toggle cursor-pointer" title="Smart mode">
-          <input type="checkbox" id="smart-mode-enabled" onchange="saveSmartMode()">
-          <span class="smart-toggle-track"></span>
-          <span class="smart-toggle-thumb"></span>
-        </label>
+        <div class="smart-mode-switch" role="group" aria-label="Smart mode">
+          <button type="button" data-smart-mode="off" onclick="saveSmartMode('off')">Off</button>
+          <button type="button" data-smart-mode="smart" onclick="saveSmartMode('smart')">Smart</button>
+          <button type="button" data-smart-mode="smart_plus" onclick="saveSmartMode('smart_plus')">Smart+</button>
+        </div>
       </div>
     </div>
     <div class="timer-schedule-card bg-white rounded-xl border border-gray-200">
@@ -4348,7 +4335,7 @@ function initSimDate() {
   const el = document.getElementById('sim-date');
   if (!el) return;
   el.value = DEBUG_TODAY;
-  el.max = DEBUG_TODAY;
+  el.max = nextCalendarDate(DEBUG_TODAY);
 }
 
 function updateSimHistoryChrome(data) {
@@ -4412,7 +4399,8 @@ async function loadSimulationForDate(dateStr, options = {}) {
   try {
     const q = new URLSearchParams();
     if (date !== DEBUG_TODAY) q.set('date', date);
-    if (options.force && date === DEBUG_TODAY) q.set('refresh', '1');
+    const liveTomorrow = date === nextCalendarDate(DEBUG_TODAY);
+    if (options.force && (date === DEBUG_TODAY || liveTomorrow)) q.set('refresh', '1');
     const qs = q.toString() ? `?${q}` : '';
     const res = await fetch('api/simulation' + qs);
     simData = await res.json();
@@ -8267,7 +8255,7 @@ function renderRCEChart(d) {
 // ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------
-let smartModeEnabled = false;
+let smartMode = 'off';
 let rulesManualEditPending = false;
 
 function markRulesManualEdit() {
@@ -8278,38 +8266,39 @@ function clearRulesManualEdit() {
   rulesManualEditPending = false;
 }
 
+function applySmartModeButtons(mode) {
+  smartMode = mode || 'off';
+  document.querySelectorAll('[data-smart-mode]').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.smartMode === smartMode);
+  });
+}
+
 function isSmartModeEnabled() {
-  const el = document.getElementById('smart-mode-enabled');
-  if (el) return el.checked;
-  return smartModeEnabled;
+  return smartMode !== 'off';
 }
 
 async function loadSmartMode() {
   try {
     const res = await fetch('api/smart-mode');
     const d = await res.json();
-    smartModeEnabled = !!d.enabled;
-    const el = document.getElementById('smart-mode-enabled');
-    if (el) el.checked = smartModeEnabled;
+    applySmartModeButtons(d.mode || (d.enabled ? 'smart' : 'off'));
   } catch (e) { console.warn('smart mode', e); }
 }
 
-async function saveSmartMode() {
-  const enabled = document.getElementById('smart-mode-enabled')?.checked ?? false;
+async function saveSmartMode(mode) {
+  const next = mode || 'off';
+  if (next === smartMode) return;
+  applySmartModeButtons(next);
   try {
     const res = await fetch('api/smart-mode', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled}),
+      body: JSON.stringify({mode: next}),
     });
     const result = await res.json();
-    smartModeEnabled = !!result.enabled;
-    if (enabled) {
-      clearRulesManualEdit();
-      await refreshTimerFromSA({ silent: true, force: true });
-    } else {
-      await refreshTimerFromSA({ silent: true, force: true });
-    }
+    applySmartModeButtons(result.mode || next);
+    if (next !== 'off') clearRulesManualEdit();
+    await refreshTimerFromSA({ silent: true, force: true });
   } catch (e) { console.warn('smart mode save', e); }
 }
 
@@ -9146,7 +9135,7 @@ function renderSimulation(data) {
 
   if (totals && totalBody) {
     totalBody.appendChild(makeSimRow(
-      { ...totals, start: simTodayTotalLabel(data.today_date) },
+      { ...totals, start: simTodayTotalLabel(data.view_date || data.today_date) },
       true,
     ));
   } else if (totalBody && !rows.length) {

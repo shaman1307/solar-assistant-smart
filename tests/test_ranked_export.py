@@ -257,8 +257,8 @@ def test_seed_uses_unrounded_avg_then_5_groszy_grows_closer_edge():
     assert tried[2] == 21
 
 
-def test_export_window_starts_at_16():
-    """Sale window is clock 16–23; 14–15 stay out even with no PV."""
+def test_export_window_daytime_offpeak_stays_out():
+    """H14 (13:00–15:00 off-peak) stays out. Evening peak H15 stays in."""
     offset = 14 * 4
     steps = 32  # H14..H21
     hours = list(range(14, 22))
@@ -272,11 +272,11 @@ def test_export_window_starts_at_16():
         eta_pv_load=1.0,
         epsilon=0.01,
     )
-    assert window == {16, 17, 18, 19, 20, 21}
+    assert window == {15, 16, 17, 18, 19, 20, 21}
 
 
-def test_export_window_respects_configured_start_hour():
-    """Start hour 18 keeps 16–17 out of the sale window."""
+def test_export_window_keeps_evening_peak_before_configured_start():
+    """Export start hour 18 does not remove evening-peak H16–H17."""
     offset = 16 * 4
     steps = 24
     hours = list(range(16, 22))
@@ -291,7 +291,7 @@ def test_export_window_respects_configured_start_hour():
         epsilon=0.01,
         export_window_start_hour=18,
     )
-    assert window == {18, 19, 20, 21}
+    assert window == {16, 17, 18, 19, 20, 21}
 
 
 def test_export_window_includes_16_even_when_pv_covers():
@@ -326,8 +326,8 @@ def test_export_window_includes_16_even_when_pv_covers():
     assert window == {16, 17, 18, 19, 20, 21}
 
 
-def test_export_window_closed_by_forecast_pv_cover_outside_slice():
-    """PV cover at H08 (full-day forecast) closes leftover; H10 is not in the window."""
+def test_export_window_keeps_morning_hours_when_forecast_pv_covers():
+    """PV cover at H08 does not drop morning hours. Daytime off-peak H13–H14 stays out."""
     offset = 10 * 4
     steps = 12 * 4
     hours = list(range(10, 22))
@@ -348,13 +348,17 @@ def test_export_window_closed_by_forecast_pv_cover_outside_slice():
             "tomorrow": {"pv": [0.0] * 24, "load": [0.5] * 24},
         },
     )
-    assert 10 not in window
-    assert 11 not in window
-    assert window == {16, 17, 18, 19, 20, 21}
+    assert 10 in window
+    assert 11 in window
+    assert 12 in window
+    assert 13 not in window
+    assert 14 not in window
+    assert 15 in window
+    assert window == {10, 11, 12, 15, 16, 17, 18, 19, 20, 21}
 
 
 def test_export_window_overnight_leftover_not_cut_at_midnight():
-    """H23 and tomorrow H00–H06 stay one window until morning PV covers."""
+    """H23 and tomorrow H00–H06 stay one window across midnight."""
     hours = [23, 24, 25, 30]
     window = evening_export_window_hours(
         hours,

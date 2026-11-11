@@ -54,12 +54,23 @@ def merge_grid_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
             0, min(23, int(grid["export_window_start_hour"])),
         )
 
+    if grid.get("super_rce_min_pln_kwh") is None:
+        grid["super_rce_min_pln_kwh"] = 2.0
+    else:
+        grid["super_rce_min_pln_kwh"] = round(float(grid["super_rce_min_pln_kwh"]), 4)
+
     return cfg
 
 
 def grid_export_threshold_pln_kwh(cfg: dict[str, Any]) -> float:
     merge_grid_defaults(cfg)
     return float(cfg["grid"]["grid_export_threshold_pln_kwh"])
+
+
+def super_rce_min_pln_kwh(cfg: dict[str, Any]) -> float:
+    """Hourly mean RCE (PLN/kWh brutto) that counts as a super-tariff hour."""
+    merge_grid_defaults(cfg)
+    return float(cfg["grid"]["super_rce_min_pln_kwh"])
 
 
 def export_window_start_hour(cfg: dict[str, Any] | None = None) -> int:

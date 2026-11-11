@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from .plan_charge import (
+    apply_morning_supercharge,
     battery_grid_charge_step_ac,
     enforce_min_hourly_battery_grid_limits,
     grid_charge_ac_kw,
@@ -191,6 +192,37 @@ def optimize_horizon(
         min_block_minutes=dp.min_block_minutes,
         min_hourly_kwh=dp.min_hourly_transfer,
     )
+    if cfg.get("smart_plus_enabled"):
+        controls = apply_morning_supercharge(
+            controls,
+            pv_series=pv_series,
+            load_series=load_series,
+            buy_prices=buy_prices,
+            offpeak_buy=dp.offpeak_buy,
+            charge_targets=dp.charge_targets,
+            initial_soc_kwh=initial_soc_kwh,
+            battery_cap=dp.battery_cap,
+            min_kwh=dp.min_kwh,
+            charge_ac_step=dp.charge_ac_step,
+            discharge_dc_step=dp.discharge_dc_step,
+            inverter_ac_step=dp.inverter_ac_step,
+            eta_grid=dp.eta_grid,
+            eta_out=dp.eta_out,
+            eta_pv_load=dp.eta_pv_load,
+            eta_pv_grid=dp.eta_pv_grid,
+            eta_pv_battery=dp.eta_pv_battery,
+            eps_step=dp.eps_step,
+            reserves=dp.reserves,
+            step_scale=step_scale,
+            rce_series=rce_series,
+            rce_step_offset=rce_step_offset,
+            export_window_start_hour=dp.window_start,
+            cfg=cfg,
+            today_date=today_date,
+            skip_leading_slots=front_load_skip_leading_slots,
+            min_block_minutes=dp.min_block_minutes,
+            min_hourly_kwh=dp.min_hourly_transfer,
+        )
     controls = plan_battery_grid_export(
         controls,
         steps=steps,
@@ -220,6 +252,35 @@ def optimize_horizon(
         cfg=cfg,
         today_date=today_date,
     )
+    if cfg.get("smart_plus_enabled"):
+        # Repack off-peak charge from the SOC left after battery export.
+        # Export already written on the controls stays.
+        controls = plan_battery_grid_charge(
+            controls,
+            pv_series=pv_series,
+            load_series=load_series,
+            buy_prices=buy_prices,
+            offpeak_buy=dp.offpeak_buy,
+            charge_targets=dp.charge_targets,
+            initial_soc_kwh=initial_soc_kwh,
+            battery_cap=dp.battery_cap,
+            min_kwh=dp.min_kwh,
+            charge_ac_step=dp.charge_ac_step,
+            discharge_dc_step=dp.discharge_dc_step,
+            inverter_ac_step=dp.inverter_ac_step,
+            eta_grid=dp.eta_grid,
+            eta_out=dp.eta_out,
+            eta_pv_load=dp.eta_pv_load,
+            eta_pv_grid=dp.eta_pv_grid,
+            eta_pv_battery=dp.eta_pv_battery,
+            eps_step=dp.eps_step,
+            reserves=dp.reserves,
+            step_scale=step_scale,
+            skip_leading_slots=front_load_skip_leading_slots,
+            min_block_minutes=dp.min_block_minutes,
+            min_hourly_kwh=dp.min_hourly_transfer,
+            preserve_export=True,
+        )
     return enforce_min_hourly_battery_grid_limits(
         controls,
         rce_step_offset=rce_step_offset,

@@ -8,7 +8,6 @@ from typing import Any
 from .plan_optimizer import (
     HourControl,
     eps_step_kwh,
-    optimize_horizon,
     reserve_soc_per_step,
     simulate_hour,
 )
@@ -205,10 +204,9 @@ def replay_day_plan_with_timer_overrides(
 ) -> dict[str, Any]:
     """Replay *from_hour* onward applying manual timer cells.
 
-    *gap_mode*:
-      - ``optimize`` — re-run DP on hours without a manual cell (EA rolling plan)
-      - ``idle`` — HourControl(0,0): PV→battery / load from battery only on hours
-        without a manual cell (solid SOC curve after a past-hour Chg patch)
+    Hours without a manual cell keep the controls from the horizon plan.
+    *gap_mode* ``idle`` replays those hours with no grid charge and no export
+    (solid SOC curve after a past-hour Chg patch).
     """
     if not overrides:
         return plan
@@ -349,59 +347,30 @@ def replay_day_plan_with_timer_overrides(
         if slice_len <= 0:
             break
 
-        off = global_step - start_step
         if idle_gaps:
             block_controls = [HourControl(0.0, 0.0, False) for _ in range(slice_len)]
         else:
-            # A gap that ends at midnight still optimizes through the next peak,
-            # so grid charge stays in the last offpeak hour. Only this gap is kept.
-            opt_pv = list(pv_q[global_step:global_step + slice_len])
-            opt_load = list(load_q[global_step:global_step + slice_len])
-            opt_buy = list(buy_q[global_step:global_step + slice_len])
-            opt_end = end_dt
-            reaches_midnight = global_step + slice_len >= 24 * Q15_PER_HOUR
-            if reaches_midnight and opt_buy:
-                from .g12_pricing import get_buy_price
-                from .plan_q15 import split_energy_hourly_to_q15
-
-                offpeak_buy = get_buy_price(start_dt.replace(hour=3), cfg)[0]
-                if opt_buy[-1] <= offpeak_buy + epsilon:
-                    tom = start_dt + timedelta(days=1)
-                    tom_pv_q = split_energy_hourly_to_q15(
-                        [float(v) for v in (tomorrow_pv or [])]
-                    )
-                    tom_load_q = split_energy_hourly_to_q15(
-                        [float(v) for v in (tomorrow_load or [])]
-                    )
-                    for hour in range(24):
-                        price = get_buy_price(tom.replace(hour=hour), cfg)[0]
-                        base = hour * Q15_PER_HOUR
-                        opt_pv.extend(
-                            tom_pv_q[base:base + Q15_PER_HOUR] or [0.0] * Q15_PER_HOUR
-                        )
-                        opt_load.extend(
-                            tom_load_q[base:base + Q15_PER_HOUR] or [0.0] * Q15_PER_HOUR
-                        )
-                        opt_buy.extend([price] * Q15_PER_HOUR)
-                        opt_end = tom.replace(hour=hour, minute=45)
-                        if price > offpeak_buy + epsilon:
-                            break
-            block_controls = optimize_horizon(
-                steps=len(opt_pv),
-                pv_series=opt_pv,
-                load_series=opt_load,
-                buy_prices=opt_buy,
-                rce_series=rce_q,
-                initial_soc_kwh=soc,
-                cfg=cfg,
-                params=params,
-                end_dt=opt_end,
-                today_date=today_date,
-                rce_map={},
-                forecast=forecast,
-                step_scale=STEP_SCALE,
-                rce_step_offset=global_step,
-            )
+            # Same horizon plan. A manual cell does not replan the other hours.
+            by_hour = plan.get("q15_by_hour") or {}
+            block_controls = []
+            for step in range(global_step, global_step + slice_len):
+                hh = step // Q15_PER_HOUR
+                qq = step % Q15_PER_HOUR
+                slot = next(
+                    (
+                        s for s in (by_hour.get(hh) or [])
+                        if int(s.get("quarter", -1)) == qq
+                    ),
+                    None,
+                )
+                if slot is None:
+                    block_controls.append(HourControl(0.0, 0.0, False))
+                    continue
+                block_controls.append(HourControl(
+                    float(slot.get("grid_charge_kw") or 0.0),
+                    float(slot.get("ctrl_battery_export_kwh") or 0.0),
+                    bool(slot.get("load_from_grid")),
+                ))
 
         for ctrl in block_controls:
             if global_step >= len(pv_q):

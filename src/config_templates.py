@@ -35,6 +35,7 @@ TEMPLATE_ROOT_KEYS: tuple[str, ...] = (
 
 RUNTIME_ROOT_KEYS: tuple[str, ...] = (
     "smart_mode_enabled",
+    "smart_plus_enabled",
     "overrides",
     "plan_overrides",
     "active_template",
