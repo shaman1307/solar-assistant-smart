@@ -399,9 +399,8 @@ def _fill_pv_intervals(
 ) -> list[float]:
     """PV kWh per Warsaw-day slot from Open-Meteo radiation.
 
-    Open-Meteo labels each radiation value with the end of its averaging
-    interval; the value fills the slot that starts ``interval_min`` earlier,
-    with the sun taken at the interval midpoint.
+    The timestamp is the start of the averaging interval and the clock hour
+    of that energy. The sun is taken at that timestamp.
     """
     n_slots = 24 * 60 // interval_min
     out = [0.0] * n_slots
@@ -411,21 +410,17 @@ def _fill_pv_intervals(
     azimuth = solar["azimuth"]
     loss = solar["system_loss_factor"]
     blocks = solar["blocks"]
-    interval = timedelta(minutes=interval_min)
 
     for t, d, df in zip(times, direct, diffuse):
-        end_utc = (
-            datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
-            .replace(tzinfo=WARSAW)
-            .astimezone(timezone.utc)
-        )
-        start_local = (end_utc - interval).astimezone(WARSAW)
+        start_local = datetime.strptime(t[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=WARSAW)
         if start_local.strftime("%Y-%m-%d") != date_str:
             continue
         slot = (start_local.hour * 60 + start_local.minute) // interval_min
         if not (0 <= slot < n_slots):
             continue
-        sun_alt, sun_az = _solar_position(lat, lon, end_utc - interval / 2)
+        sun_alt, sun_az = _solar_position(
+            lat, lon, start_local.astimezone(timezone.utc),
+        )
         kwh = 0.0
         for block in blocks:
             kwh += _block_interval_kwh(
@@ -448,14 +443,14 @@ def _fill_pv_intervals(
 
 
 def _solar_position(lat_deg: float, lon_deg: float, when_utc: datetime) -> tuple[float, float]:
-    """Sun altitude and compass azimuth (radians) at an aware UTC instant."""
-    day_of_year = when_utc.timetuple().tm_yday
-    b = math.radians(360 / 365 * (day_of_year - 81))
-    eot_min = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
-    hour = (
-        when_utc.hour + when_utc.minute / 60.0 + when_utc.second / 3600.0
-        + lon_deg / 15.0 + eot_min / 60.0
-    )
+    """Sun altitude and compass azimuth (radians) at an aware UTC instant.
+
+    Hour angle is 15° per Warsaw clock hour from noon.
+    """
+    del lon_deg
+    local = when_utc.astimezone(WARSAW)
+    day_of_year = local.timetuple().tm_yday
+    hour = local.hour + local.minute / 60.0 + local.second / 3600.0
     declination = math.radians(23.45 * math.sin(math.radians(360 / 365 * (day_of_year + 284))))
     hour_angle = math.radians(15 * (hour - 12))
     lat_rad = math.radians(lat_deg)
