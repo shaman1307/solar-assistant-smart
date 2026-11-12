@@ -1849,6 +1849,15 @@
     .forecast-overrides-chart #fc-chart-wrap {
       height: 260px;
     }
+    /* Plot paint, including the PV fill, stays under the tooltip. */
+    .forecast-overrides-chart #fc-chart-area {
+      z-index: 1;
+      isolation: isolate;
+    }
+    .forecast-overrides-chart #fc-chart-tooltip {
+      z-index: 40;
+      background: #fff;
+    }
     .forecast-overrides-chart .dash-chart-x {
       font-size: 11px;
       color: #6b7280;
@@ -3301,7 +3310,7 @@
             <div class="absolute left-6 right-8 top-0 bottom-6 overflow-hidden" id="fc-chart-area">
               <div class="absolute inset-0" id="fc-soc-bands"></div>
               <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
-                   class="absolute inset-0 w-full h-full overflow-visible" id="fc-svg-load">
+                   class="absolute inset-0 w-full h-full" id="fc-svg-load">
                 <polygon id="fc-pv-unshaded" fill="#fbbf24" fill-opacity="0.2" stroke="none"/>
                 <polyline id="fc-pv-line"            fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
                 <polyline id="fc-pv-line-actual"     fill="none" stroke="#fbbf24" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
