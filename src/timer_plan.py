@@ -1492,101 +1492,156 @@ def plan_row_grid_export_kwh(row: dict[str, Any] | None) -> float:
     return max(0.0, float(v))
 
 
-def _discharge_window_writes(
-    rows: list[dict],
-    hour: int,
-    existing_slots: list[dict[str, Any]],
-    discharge_cap_kw: float,
-    *,
-    timed_discharge_on: bool,
-    timed_charge_on: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-    """Place the abutting discharge run into the 3 SA slots.
+def _segment_end_min(seg: dict[str, Any]) -> int | None:
+    """End minute of a timer segment. 00:00 after a later start is midnight."""
+    start = _parse_hhmm_to_min(seg.get("from", "00:00"))
+    end = _parse_hhmm_to_min(seg.get("to", "00:00"))
+    if start is None or end is None:
+        return None
+    if end <= start:
+        return end + 24 * 60
+    return end
 
-    The current segment stays in the slot that already has its start time.
-    Later slots in that window take the following segments, or 00:00–00:00
-    when that segment is gone. A segment that is not already in a slot
-    refills all three from slot 1. A slot whose window already covers this
-    hour is left unchanged. Only other slots whose time, power, or cap differ
-    are returned for writing.
-    """
-    start_row = next(
-        (r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL"),
-        None,
-    )
-    plan_date = str(start_row.get("plan_date") or "") if start_row else ""
-    ordered: list[tuple[int, int, dict]] = []
+
+def _is_full_clock_hour(hour: int, seg: dict[str, Any]) -> bool:
+    """True when the segment is exactly [hour:00, hour+1:00)."""
+    start = _parse_hhmm_to_min(seg.get("from", "00:00"))
+    end = _segment_end_min(seg)
+    return start == int(hour) * 60 and end == (int(hour) + 1) * 60
+
+
+def _send_power_kw(seg: dict[str, Any], power_cap_kw: float) -> float:
+    return round(min(float(seg["power_kw"]), float(power_cap_kw)), 2)
+
+
+def _same_send_power(a: dict[str, Any], b: dict[str, Any], power_cap_kw: float) -> bool:
+    return abs(_send_power_kw(a, power_cap_kw) - _send_power_kw(b, power_cap_kw)) <= 0.05
+
+
+def _hours_abut(
+    prev_date: str,
+    prev_hour: int,
+    prev_seg: dict[str, Any],
+    nxt_date: str,
+    nxt_hour: int,
+    nxt_seg: dict[str, Any],
+) -> bool:
+    if prev_seg["to"] != nxt_seg["from"]:
+        return False
+    if prev_date == nxt_date:
+        return nxt_hour == prev_hour + 1
+    return prev_hour == 23 and nxt_hour == 0 and bool(nxt_date) and nxt_date > prev_date
+
+
+def _kind_segments(
+    rows: list[dict],
+    kind: str,
+) -> list[tuple[str, int, dict[str, Any]]]:
+    """Timer segments of one kind, in plan-date then hour order."""
+    found: list[tuple[str, int, dict[str, Any]]] = []
     for row in rows:
         if row.get("start") == "TOTAL" or row.get("hour") is None:
             continue
-        row_hour = int(row["hour"])
-        row_date = str(row.get("plan_date") or "")
-        if plan_date and row_date and row_date != plan_date:
-            if row_date > plan_date:
-                ordered.append((1, row_hour, row))
-            continue
-        if row_hour >= hour:
-            ordered.append((0, row_hour, row))
-    ordered.sort(key=lambda item: (item[0], item[1]))
-
-    queue: list[dict[str, Any]] = []
-    prev_to: str | None = None
-    for _day, _row_hour, row in ordered:
+        hour = int(row["hour"])
+        plan_date = str(row.get("plan_date") or "")
         for seg in parse_timer_schedule_segments(str(row.get("timer_schedule") or "")):
-            if seg["kind"] != "dis":
-                if queue:
-                    prev_to = ""
+            if seg["kind"] != kind:
                 continue
-            if prev_to is not None and seg["from"] != prev_to:
-                prev_to = ""
-                break
-            queue.append(seg)
-            prev_to = seg["to"]
-        if prev_to == "":
+            found.append((plan_date, hour, seg))
             break
+    found.sort(key=lambda item: (item[0], item[1]))
+    return found
 
-    slots = _ensure_three_slots(existing_slots, "discharge")
-    if not queue:
-        return slots, [], True
 
-    start = queue[0]["from"]
-    anchor: int | None = None
-    for idx, slot in enumerate(slots):
-        if _normalize_hhmm(str(slot.get("from") or "")) == start:
-            anchor = idx
-            break
+def _timer_window_writes(
+    rows: list[dict],
+    hour: int,
+    plan_date: str,
+    kind: str,
+    existing_slots: list[dict[str, Any]],
+    power_cap_kw: float,
+    *,
+    live_soc_pct: float | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """SA slots to write for this hour's charge or discharge.
 
-    begin = 0 if anchor is None else anchor
+    Consecutive full hours of the same power are one window. The first hour
+    sends that whole range with the SOC of the last hour. A later hour sends
+    nothing when the inverter already has that range, power, and SOC. A partial
+    hour, or a full hour whose power differs, is sent as its own window.
+    """
+    slot_kind = "charge" if kind == "chg" else "discharge"
+    slots = _ensure_three_slots(existing_slots, slot_kind)
+    items = _kind_segments(rows, kind)
+    idx = next(
+        (
+            i for i, (row_date, row_hour, _seg) in enumerate(items)
+            if row_hour == int(hour) and (not plan_date or not row_date or row_date == plan_date)
+        ),
+        None,
+    )
+    if idx is None:
+        return slots, []
 
-    def _desired(idx: int, seg: dict[str, Any] | None) -> dict[str, Any]:
-        tpl = slots[idx]
-        if seg is None:
-            empty = _inactive_slot(idx + 1, "discharge", tpl)
-            empty["power_kw"] = 0.0
-            return empty
-        return {
-            "slot": idx + 1,
-            "from": seg["from"],
-            "to": seg["to"],
-            "capacity_pct": seg["capacity_pct"],
-            "voltage_v": float(tpl.get("voltage_v", 42.0)),
-            "power_kw": round(min(float(seg["power_kw"]), discharge_cap_kw), 2),
-        }
+    def _extends(left: int, right: int) -> bool:
+        ld, lh, ls = items[left]
+        rd, rh, rs = items[right]
+        return (
+            _is_full_clock_hour(lh, ls)
+            and _is_full_clock_hour(rh, rs)
+            and _same_send_power(ls, rs, power_cap_kw)
+            and _hours_abut(ld, lh, ls, rd, rh, rs)
+        )
 
-    to_write: list[dict[str, Any]] = []
-    hour_min = int(hour) * 60
-    for offset, idx in enumerate(range(begin, 3)):
-        existing_slot = existing_slots[idx] if idx < len(existing_slots) else {}
-        if _slot_covers_minute(existing_slot, hour_min):
+    _date, row_hour, seg = items[idx]
+    if _is_full_clock_hour(row_hour, seg):
+        start = idx
+        while start > 0 and _extends(start - 1, start):
+            start -= 1
+        end = idx
+        while end + 1 < len(items) and _extends(end, end + 1):
+            end += 1
+    else:
+        start = end = idx
+
+    run = items[start:end + 1]
+    first = run[0][2]
+    last = run[-1][2]
+    power = _send_power_kw(first, power_cap_kw)
+    cap = int(last["capacity_pct"])
+    if kind == "chg" and live_soc_pct is not None:
+        try:
+            cap = max(cap, min(100, int(float(live_soc_pct)) + CHARGE_CAP_MIN_HEADROOM_PCT))
+        except (TypeError, ValueError):
+            pass
+    tpl = slots[0]
+    desired = {
+        "slot": 1,
+        "from": first["from"],
+        "to": last["to"],
+        "capacity_pct": cap,
+        "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "chg" else 42.0)),
+        "power_kw": power,
+    }
+    if kind == "chg":
+        desired["grid"] = True
+        desired["generator"] = False
+
+    if any(_timer_slot_matches(slot, desired) for slot in slots):
+        slots[0] = desired
+        return slots, []
+
+    to_write: list[dict[str, Any]] = [desired]
+    slots[0] = desired
+    for idx_slot in range(1, 3):
+        existing_slot = slots[idx_slot]
+        if not _slot_is_active(existing_slot):
             continue
-        seg = queue[offset] if offset < len(queue) else None
-        desired = _desired(idx, seg)
-        slots[idx] = desired
-        if not _timer_slot_matches(existing_slot, desired):
-            to_write.append(desired)
-
-    skip_flags = anchor is not None and timed_discharge_on and not timed_charge_on
-    return slots, to_write, skip_flags
+        empty = _inactive_slot(idx_slot + 1, slot_kind, existing_slot)
+        empty["power_kw"] = 0.0
+        slots[idx_slot] = empty
+        to_write.append(empty)
+    return slots, to_write
 
 
 def build_sa_schedule_from_hour_row(
@@ -1614,52 +1669,39 @@ def build_sa_schedule_from_hour_row(
     existing = existing or {}
     charge_cap = plan_timer_charge_power_kw(cfg)
     discharge_cap = plan_timer_discharge_power_kw(cfg)
-    charge_slots = _ensure_three_slots(existing.get("charge_slots", []), "charge")
-    discharge_slots = _ensure_three_slots(existing.get("discharge_slots", []), "discharge")
-    timed_charge = False
-    timed_discharge = False
+    plan_date = str(row.get("plan_date") or "")
+    kinds = {seg["kind"] for seg in segments}
+    timed_charge = "chg" in kinds
+    timed_discharge = "dis" in kinds
+    charge_slots_to_write: list[dict[str, Any]] = []
+    discharge_slots_to_write: list[dict[str, Any]] = []
 
-    for seg in segments:
-        if seg["kind"] == "chg":
-            timed_charge = True
-            tpl = charge_slots[0]
-            cap = int(seg["capacity_pct"])
-            if live_soc_pct is not None:
-                try:
-                    cap = max(
-                        cap,
-                        min(100, int(float(live_soc_pct)) + CHARGE_CAP_MIN_HEADROOM_PCT),
-                    )
-                except (TypeError, ValueError):
-                    pass
-            charge_slots[0] = {
-                "slot": 1,
-                "from": seg["from"],
-                "to": seg["to"],
-                "capacity_pct": cap,
-                "voltage_v": float(tpl.get("voltage_v", 58.0)),
-                "power_kw": round(min(float(seg["power_kw"]), charge_cap), 2),
-                "grid": True,
-                "generator": False,
-            }
-        elif seg["kind"] == "dis":
-            timed_discharge = True
+    if timed_charge:
+        charge_slots, charge_slots_to_write = _timer_window_writes(
+            rows, hour, plan_date, "chg",
+            existing.get("charge_slots") or [],
+            charge_cap,
+            live_soc_pct=live_soc_pct,
+        )
+    else:
+        charge_slots = _ensure_three_slots(existing.get("charge_slots", []), "charge")
 
-    discharge_slots_to_write: list[dict[str, Any]] | None = None
-    skip_timer_flags = False
     if timed_discharge:
-        discharge_slots, discharge_slots_to_write, skip_timer_flags = _discharge_window_writes(
-            rows,
-            hour,
+        discharge_slots, discharge_slots_to_write = _timer_window_writes(
+            rows, hour, plan_date, "dis",
             existing.get("discharge_slots") or [],
             discharge_cap,
-            timed_discharge_on=bool(existing.get("timed_discharge_enabled")),
-            timed_charge_on=bool(existing.get("timed_charge_enabled")),
         )
+    else:
+        discharge_slots = _ensure_three_slots(existing.get("discharge_slots", []), "discharge")
 
     if not timed_charge and not timed_discharge:
         return None
 
+    flags_match = (
+        bool(existing.get("timed_charge_enabled")) == timed_charge
+        and bool(existing.get("timed_discharge_enabled")) == timed_discharge
+    )
     return {
         "target_hour": hour,
         "planned_action": row.get("action"),
@@ -1668,8 +1710,9 @@ def build_sa_schedule_from_hour_row(
         "timed_discharge_enabled": timed_discharge,
         "charge_slots": charge_slots,
         "discharge_slots": discharge_slots,
+        "charge_slots_to_write": charge_slots_to_write,
         "discharge_slots_to_write": discharge_slots_to_write,
-        "skip_timer_flags": skip_timer_flags,
+        "skip_timer_flags": flags_match,
     }
 
 
@@ -1705,20 +1748,20 @@ def sa_schedule_matches_plan_row(
     if bool(rules.get("timed_discharge_enabled")) != bool(expected.get("timed_discharge_enabled")):
         return False
 
-    sa_charge = (rules.get("charge_slots") or [{}])[0]
     exp_charge = (expected.get("charge_slots") or [{}])[0]
+    sa_charge_slots = rules.get("charge_slots") or [{}]
     if expected.get("timed_charge_enabled"):
-        if not _timer_slot_matches(sa_charge, exp_charge):
+        if not any(_timer_slot_matches(slot, exp_charge) for slot in sa_charge_slots):
             return False
-    elif _slot_is_active(sa_charge):
+    elif _slot_is_active(sa_charge_slots[0]):
         return False
 
-    sa_dis = (rules.get("discharge_slots") or [{}])[0]
     exp_dis = (expected.get("discharge_slots") or [{}])[0]
+    sa_dis_slots = rules.get("discharge_slots") or [{}]
     if expected.get("timed_discharge_enabled"):
-        if not _timer_slot_matches(sa_dis, exp_dis):
+        if not any(_timer_slot_matches(slot, exp_dis) for slot in sa_dis_slots):
             return False
-    elif _slot_is_active(sa_dis):
+    elif _slot_is_active(sa_dis_slots[0]):
         return False
 
     return True

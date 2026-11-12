@@ -1045,7 +1045,8 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
 
 
 async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bool:
-    """Auto-sync: charge writes slot 1. Discharge writes the slots that differ."""
+    """Write the current charge/discharge window. Skip when the inverter already has it."""
+    write_chg = schedule.get("charge_slots_to_write")
     write_dis = schedule.get("discharge_slots_to_write")
     skip_flags = bool(schedule.get("skip_timer_flags"))
     slim: dict[str, Any] = {
@@ -1054,26 +1055,29 @@ async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bo
         "charge_slots": [],
         "discharge_slots": [],
     }
-    if schedule.get("timed_charge_enabled"):
+    if write_chg is not None:
+        slim["charge_slots"] = list(write_chg)
+    elif schedule.get("timed_charge_enabled"):
         slim["charge_slots"] = [schedule.get("charge_slots", [{}])[0]]
     if write_dis is not None:
         slim["discharge_slots"] = list(write_dis)
     elif schedule.get("timed_discharge_enabled"):
         slim["discharge_slots"] = [schedule.get("discharge_slots", [{}])[0]]
-    if write_dis is not None and not write_dis and not slim["charge_slots"]:
-        log.info(
-            "Hourly discharge slots unchanged — hour=%s",
-            schedule.get("target_hour"),
-        )
-        return True
     if not slim["charge_slots"] and not slim["discharge_slots"]:
-        # No active slots — still assert Grid charge off when Timed charge is off.
-        if not slim["timed_charge_enabled"]:
-            ok_grid = await set_grid_charging(cfg, enabled=False, verify=True)
-            if not ok_grid:
-                return False
-        log.info("Hourly schedule apply skipped — no timed charge/discharge enabled")
-        return True
+        if skip_flags:
+            log.info(
+                "Hourly timer already covers hour=%s",
+                schedule.get("target_hour"),
+            )
+            return True
+        if slim["timed_charge_enabled"] is None and slim["timed_discharge_enabled"] is None:
+            log.info("Hourly schedule apply skipped — no timed charge/discharge enabled")
+            return True
+        return await set_timed_power_flags(
+            cfg,
+            timed_charge_enabled=bool(schedule.get("timed_charge_enabled")),
+            timed_discharge_enabled=bool(schedule.get("timed_discharge_enabled")),
+        )
     ok = await set_timer_schedule(cfg, slim)
     if ok:
         log.info(

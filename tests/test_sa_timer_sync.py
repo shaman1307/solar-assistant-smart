@@ -101,7 +101,7 @@ def _empty_dis_slots() -> list[dict]:
     ]
 
 
-def test_discharge_window_fills_three_slots_and_leaves_the_fourth():
+def test_same_power_full_hours_are_one_window_with_the_last_soc():
     rows = [
         _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
         _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
@@ -114,38 +114,83 @@ def test_discharge_window_fills_three_slots_and_leaves_the_fourth():
     })
     assert schedule is not None
     written = schedule["discharge_slots_to_write"]
-    assert [(s["slot"], s["from"], s["to"]) for s in written] == [
-        (1, "19:00", "20:00"),
-        (2, "20:00", "21:00"),
-        (3, "21:00", "22:00"),
+    assert [(s["slot"], s["from"], s["to"], s["capacity_pct"]) for s in written] == [
+        (1, "19:00", "23:00", 36),
     ]
     assert schedule["skip_timer_flags"] is False
 
 
-def test_discharge_window_updates_only_changed_later_slots():
+def test_later_hour_of_the_same_window_sends_nothing():
+    rows = [
+        _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
+        _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
+        _dis_row(21, "Dis 21:00-22:00 8.0kW cap40%"),
+        _dis_row(22, "Dis 22:00-23:00 8.0kW cap36%"),
+    ]
+    live = _empty_dis_slots()
+    live[0] = {
+        "slot": 1, "from": "19:00", "to": "23:00",
+        "capacity_pct": 36, "power_kw": 8.0, "voltage_v": 42.0,
+    }
+    schedule = build_sa_schedule_from_hour_row(rows, 21, _cfg(), existing={
+        "timed_discharge_enabled": True,
+        "timed_charge_enabled": False,
+        "discharge_slots": live,
+    })
+    assert schedule is not None
+    assert schedule["discharge_slots_to_write"] == []
+    assert schedule["skip_timer_flags"] is True
+
+
+def test_changed_power_sends_that_hour_and_clears_the_old_window():
     rows = [
         _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
         _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
         _dis_row(21, "Dis 21:00-22:00 7.5kW cap40%"),
         _dis_row(22, "Dis 22:00-23:00 8.0kW cap30%"),
     ]
-    live = [
-        {"slot": 1, "from": "19:00", "to": "20:00", "capacity_pct": 47, "power_kw": 8.0, "voltage_v": 42.0},
-        {"slot": 2, "from": "20:00", "to": "21:00", "capacity_pct": 44, "power_kw": 8.0, "voltage_v": 42.0},
-        {"slot": 3, "from": "21:00", "to": "22:00", "capacity_pct": 40, "power_kw": 8.0, "voltage_v": 42.0},
-    ]
-    schedule = build_sa_schedule_from_hour_row(rows, 20, _cfg(), existing={
+    live = _empty_dis_slots()
+    live[0] = {
+        "slot": 1, "from": "19:00", "to": "21:00",
+        "capacity_pct": 44, "power_kw": 8.0, "voltage_v": 42.0,
+    }
+    schedule = build_sa_schedule_from_hour_row(rows, 21, _cfg(), existing={
         "timed_discharge_enabled": True,
         "timed_charge_enabled": False,
         "discharge_slots": live,
     })
     assert schedule is not None
     written = schedule["discharge_slots_to_write"]
-    assert [(s["slot"], s["power_kw"]) for s in written] == [(3, 7.5)]
+    assert [(s["slot"], s["from"], s["to"], s["power_kw"], s["capacity_pct"]) for s in written] == [
+        (1, "21:00", "22:00", 7.5, 40),
+    ]
     assert schedule["skip_timer_flags"] is True
 
 
-def test_discharge_window_zeros_slot_when_hour_drops_out():
+def test_partial_last_hour_is_sent_on_its_own():
+    rows = [
+        _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
+        _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
+        _dis_row(21, "Dis 21:00-21:30 5.0kW cap16%"),
+    ]
+    live = _empty_dis_slots()
+    live[0] = {
+        "slot": 1, "from": "19:00", "to": "21:00",
+        "capacity_pct": 44, "power_kw": 8.0, "voltage_v": 42.0,
+    }
+    schedule = build_sa_schedule_from_hour_row(rows, 21, _cfg(), existing={
+        "timed_discharge_enabled": True,
+        "timed_charge_enabled": False,
+        "discharge_slots": live,
+    })
+    assert schedule is not None
+    written = schedule["discharge_slots_to_write"]
+    assert [(s["slot"], s["from"], s["to"], s["power_kw"], s["capacity_pct"]) for s in written] == [
+        (1, "21:00", "21:30", 5.0, 16),
+    ]
+
+
+def test_matching_recorded_window_is_left_when_a_later_hour_is_gone():
     rows = [
         _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
         _dis_row(22, "Dis 22:00-23:00 8.0kW cap36%"),
@@ -160,15 +205,11 @@ def test_discharge_window_zeros_slot_when_hour_drops_out():
         "discharge_slots": live,
     })
     assert schedule is not None
-    written = schedule["discharge_slots_to_write"]
-    assert len(written) == 1
-    assert written[0]["slot"] == 3
-    assert written[0]["from"] == "00:00"
-    assert written[0]["to"] == "00:00"
-    assert written[0]["power_kw"] == 0.0
+    assert schedule["discharge_slots_to_write"] == []
+    assert schedule["skip_timer_flags"] is True
 
 
-def test_discharge_window_refills_when_the_run_passes_three_slots():
+def test_same_power_run_is_rewritten_when_the_recorded_window_is_short():
     rows = [
         _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
         _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
@@ -187,11 +228,42 @@ def test_discharge_window_refills_when_the_run_passes_three_slots():
     })
     assert schedule is not None
     written = [(s["slot"], s["from"], s["to"], s["power_kw"]) for s in schedule["discharge_slots_to_write"]]
-    assert written == [
-        (1, "22:00", "23:00", 8.0),
-        (2, "23:00", "00:00", 8.0),
-        (3, "00:00", "00:00", 0.0),
+    assert written[0] == (1, "19:00", "00:00", 8.0)
+    assert schedule["discharge_slots"][0]["capacity_pct"] == 32
+    assert [item[0] for item in written if item[1] == "00:00"] == [2, 3]
+
+
+def test_charge_same_power_hours_use_the_last_soc_then_skip():
+    def _chg(hour: int, cap: int) -> dict:
+        return {
+            "hour": hour,
+            "plan_date": "2026-11-12",
+            "start": f"12-11-2026 {hour + 1:02d}:00",
+            "action": "Charging from Grid",
+            "timer_schedule": f"Chg {hour:02d}:00-{hour + 1:02d}:00 5.8kW cap{cap}%",
+        }
+
+    rows = [_chg(13, 56), _chg(14, 80)]
+    cfg = _cfg()
+    first = build_sa_schedule_from_hour_row(rows, 13, cfg, existing={
+        "timed_charge_enabled": False,
+        "charge_slots": _empty_dis_slots(),
+    })
+    assert first is not None
+    written = first["charge_slots_to_write"]
+    assert [(s["slot"], s["from"], s["to"], s["power_kw"], s["capacity_pct"]) for s in written] == [
+        (1, "13:00", "15:00", 5.8, 80),
     ]
+    live = _empty_dis_slots()
+    live[0] = dict(written[0])
+    second = build_sa_schedule_from_hour_row(rows, 14, cfg, existing={
+        "timed_charge_enabled": True,
+        "timed_discharge_enabled": False,
+        "charge_slots": live,
+    })
+    assert second is not None
+    assert second["charge_slots_to_write"] == []
+    assert second["skip_timer_flags"] is True
 
 
 def test_write_metrics_retries_crc_then_succeeds():

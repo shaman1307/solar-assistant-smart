@@ -1,8 +1,8 @@
 """
 Hour boundary SA sync — :00, :15/:30/:45 Europe/Warsaw.
 
-Writes to SA from the current hour's Energy arbitrage Timer Schedule cell
-(e.g. Dis 19:30-20:00 6.51kW cap16%), not merged multi-hour proposed_schedule.
+Writes to SA from the current hour's Energy arbitrage Timer Schedule cell.
+Consecutive full hours of the same power are one window, sent on the first hour.
 
 Mode write order (SRNE):
   Export start: Work mode On-grid → Battery Grid export → Timed discharge on
@@ -391,7 +391,26 @@ async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
         )
         if charge_active or discharge_active:
             rules = await sa_client.get_rules(cfg)
-            if _sa_missing_active_plan_timer(timer_txt, now, rules):
+            metrics = await sa_client.get_live_metrics(cfg)
+            live_soc = metrics.get("battery_soc")
+            try:
+                live_soc_pct = float(live_soc) if live_soc is not None else None
+            except (TypeError, ValueError):
+                live_soc_pct = None
+            schedule = build_sa_schedule_from_hour_row(
+                rows, now.hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
+            )
+            needs_write = bool(
+                schedule
+                and (
+                    schedule.get("charge_slots_to_write")
+                    or schedule.get("discharge_slots_to_write")
+                    or not schedule.get("skip_timer_flags")
+                )
+            )
+            if needs_write or (
+                schedule is None and _sa_missing_active_plan_timer(timer_txt, now, rules)
+            ):
                 if charge_active:
                     # Limit home + UPS/home before enabling timed charge.
                     status["work_mode"] = await run_work_mode_hour_start(now=now)

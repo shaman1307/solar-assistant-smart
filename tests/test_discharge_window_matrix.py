@@ -91,162 +91,55 @@ def _sync(rows: list[dict], hour: int, live: list[dict], *, discharge_on: bool):
     return written, schedule["skip_timer_flags"]
 
 
-def _zero_dropped(hour: int, live: list[dict]) -> list[int]:
-    rules = {
-        "timed_charge_enabled": False,
-        "timed_discharge_enabled": True,
-        "discharge_slots": live,
-    }
-    apply_mock = AsyncMock(return_value=True)
-    with (
-        patch.object(hbs.sa_client, "get_rules", AsyncMock(return_value=rules)),
-        patch.object(hbs.sa_client, "apply_hourly_schedule_to_sa", apply_mock),
-    ):
-        status = asyncio.run(hbs._sync_timer_from_hour_row(_cfg(), [], hour))
-    assert status["ok"] is True
-    assert not apply_mock.await_count
-    return []
-
-
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
 def test_unchanged_discharge_windows(n: int):
     rows = _rows(n)
     live = _empty_slots()
     written, skip_flags = _sync(rows, START, live, discharge_on=False)
-    loaded = min(3, n)
+    last_cap = 50 - (n - 1)
+    end_hour = START + n
     assert skip_flags is False
     assert [_signature(s) for s in written] == [
-        (i + 1, f"{START + i:02d}:00", f"{START + i + 1:02d}:00", 8.0, 50 - i)
-        for i in range(loaded)
+        (1, f"{START:02d}:00", f"{end_hour:02d}:00", 8.0, last_cap),
     ]
 
     for step in range(1, n):
-        hour = START + step
-        before = [dict(slot) for slot in live]
-        written, skip_flags = _sync(rows, hour, live, discharge_on=True)
-        if step != 3:
-            assert written == []
-            assert skip_flags is True
-            continue
-        assert skip_flags is False
-        expect = []
-        for offset in range(3):
-            src = step + offset
-            if src < n:
-                expect.append((
-                    offset + 1,
-                    f"{START + src:02d}:00",
-                    f"{START + src + 1:02d}:00",
-                    8.0,
-                    50 - src,
-                ))
-            else:
-                expect.append((
-                    offset + 1,
-                    "00:00",
-                    "00:00",
-                    0.0,
-                    int(before[offset]["capacity_pct"]),
-                ))
-        assert [_signature(s) for s in written] == [
-            sig for sig in expect
-            if not (
-                sig[1] == "00:00"
-                and before[sig[0] - 1]["from"] == "00:00"
-                and float(before[sig[0] - 1]["power_kw"]) == 0.0
-            )
-        ]
+        written, skip_flags = _sync(rows, START + step, live, discharge_on=True)
+        assert written == []
+        assert skip_flags is True
 
 
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
-@pytest.mark.parametrize("field", ["power", "cap"])
-def test_subsequent_power_or_cap_changes_during_the_open_hour(n: int, field: str):
-    """Change later windows while hour 10 is open. The next boundary writes those slots."""
-    overrides: dict[int, tuple[float, int]] = {}
-    for hour in range(START + 1, START + n):
-        power, cap = 8.0, 50 - (hour - START)
-        if field == "power":
-            power = 6.5
-        else:
-            cap = 29
-        overrides[hour] = (power, cap)
+def test_later_power_change_rewrites_the_window(n: int):
+    """A later hour with a different power is sent as its own run."""
+    overrides = {
+        hour: (6.5, 50 - (hour - START))
+        for hour in range(START + 1, START + n)
+    }
     rows = _rows(n, overrides)
     live = _empty_slots()
     _sync(_rows(n), START, live, discharge_on=False)
 
     written, skip_flags = _sync(rows, START + 1, live, discharge_on=True)
-    # The window that covers the open hour stays. Later slots still update.
-    future = [h for h in range(START + 2, START + n) if h < START + 3]
     assert skip_flags is True
-    assert [s["slot"] for s in written] == list(range(3, 3 + len(future)))
-    assert all(int(s["from"][:2]) != START + 1 for s in written)
-    for slot in written:
-        hour = int(slot["from"][:2])
-        if field == "power":
-            assert slot["power_kw"] == 6.5
-        else:
-            assert slot["capacity_pct"] == 29
-        assert hour in future
-
-    if n > 3:
-        far = START + 3
-        assert all(s["from"] != f"{far:02d}:00" for s in written)
-        refilled, skip_flags = _sync(rows, far, live, discharge_on=True)
-        assert skip_flags is False
-        head = refilled[0]
-        assert head["from"] == f"{far:02d}:00"
-        if field == "power":
-            assert head["power_kw"] == 6.5
-        else:
-            assert head["capacity_pct"] == 29
+    assert written
+    head = written[0]
+    assert head["from"] == f"{START + 1:02d}:00"
+    assert head["to"] == f"{START + n:02d}:00"
+    assert head["power_kw"] == 6.5
+    assert head["capacity_pct"] == 50 - (n - 1)
 
 
-@pytest.mark.parametrize(
-    ("n", "drop_offsets"),
-    [
-        (2, (1,)),
-        (3, (1,)),
-        (3, (2,)),
-        (3, (1, 2)),
-        (4, (1,)),
-        (4, (2,)),
-        (4, (3,)),
-        (4, (1, 2)),
-        (4, (1, 2, 3)),
-        (5, (1,)),
-        (5, (2,)),
-        (5, (3,)),
-        (5, (1, 2)),
-        (5, (2, 3)),
-        (5, (1, 2, 3)),
-        (5, (1, 2, 3, 4)),
-    ],
-)
-def test_subsequent_windows_disappear_during_the_open_hour(n: int, drop_offsets: tuple[int, ...]):
-    """Later windows can be cleared before they start. The open hour's window stays."""
-    if max(drop_offsets) >= n:
-        pytest.skip("drop is past the end of this run")
-    dropped = {START + offset for offset in drop_offsets}
-    rows = [row for row in _rows(n) if row["hour"] not in dropped]
+def test_dropped_tail_shortens_the_recorded_window():
+    rows = _rows(4)
     live = _empty_slots()
-    _sync(_rows(n), START, live, discharge_on=False)
-
-    for hour in range(START + 1, START + n):
-        if hour in dropped:
-            before = [dict(slot) for slot in live]
-            _zero_dropped(hour, live)
-            for prev, slot in zip(before, live):
-                if prev["from"] == f"{hour:02d}:00":
-                    assert slot["from"] == prev["from"]
-                    assert slot["to"] == prev["to"]
-                    assert float(slot["power_kw"]) == float(prev["power_kw"])
-            continue
-        written, _skip = _sync(rows, hour, live, discharge_on=True)
-        for slot in written:
-            if slot["from"] == "00:00":
-                assert slot["power_kw"] == 0.0
-                continue
-            assert int(slot["from"][:2]) not in dropped
+    _sync(rows, START, live, discharge_on=False)
+    kept = [row for row in rows if row["hour"] != START + 3]
+    written, skip_flags = _sync(kept, START + 1, live, discharge_on=True)
+    assert skip_flags is True
+    assert written[0]["from"] == f"{START:02d}:00"
+    assert written[0]["to"] == f"{START + 3:02d}:00"
+    assert written[0]["capacity_pct"] == 50 - 2
 
 
 def _idle_row(hour: int) -> dict:
