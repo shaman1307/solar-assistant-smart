@@ -434,6 +434,36 @@ def assemble_ea_plan_rows(
     return all_rows, export_hours
 
 
+def overlay_plan_row_soc_q15(
+    slots: list[float | None],
+    rows: list[dict[str, Any]] | None,
+    date_str: str,
+) -> None:
+    """Write one day's q15 SOC from plan rows. Later rows replace the same quarter."""
+    for row in rows or []:
+        if str(row.get("plan_date") or "") != date_str:
+            continue
+        hour = row.get("hour")
+        if hour is None or not (0 <= int(hour) < 24):
+            continue
+        h = int(hour)
+        q15 = row.get("q15") or []
+        wrote = False
+        for slot in q15:
+            q = int(slot.get("quarter", 0))
+            if not (0 <= q < 4):
+                continue
+            soc = slot.get("soc")
+            if soc is None:
+                continue
+            slots[h * 4 + q] = round(float(soc), 1)
+            wrote = True
+        if not wrote and row.get("soc") is not None:
+            pct = round(float(row["soc"]), 1)
+            for q in range(4):
+                slots[h * 4 + q] = pct
+
+
 def soc_q15_from_q15_by_hour(plan: dict[str, Any] | None) -> list[float | None]:
     """Full-day q15 SOC from the optimizer (today chart plan line)."""
     out: list[float | None] = [None] * 96
@@ -499,33 +529,43 @@ def build_chart_plan_soc_q15(
     all_rows: list[dict[str, Any]],
     smart_today: dict[str, Any] | None,
     battery_cap: float,
+    history_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[list[float | None], list[float | None]]:
-    """Chart SOC: today as-if 00:00; tomorrow seeded from EA end-of-today."""
-    day_plan_for_soc = run_day_smart_q15_plan(
-        date_str=today_str,
-        pv_hourly=pv_forecast_today,
-        load_hourly=load_forecast_today,
-        tomorrow_pv=pv_tomorrow,
-        tomorrow_load=load_tomorrow,
-        cfg=cfg,
-        rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
-        initial_soc_kwh=day_start_soc,
-        from_hour=0,
-    )
-    if today_timer_ov:
-        day_plan_for_soc = apply_plan_timer_overrides_if_any(
-            day_plan_for_soc,
+    """Chart SOC for the plan rows. Today uses those rows, not a second day run.
+
+    Completed hours come from history. Later hours come from the plan that
+    sets the timers, so a Smart+ sale hour drops SOC in that same hour.
+    """
+    today_plan_soc: list[float | None] = [None] * 96
+    overlay_plan_row_soc_q15(today_plan_soc, history_rows, today_str)
+    overlay_plan_row_soc_q15(today_plan_soc, all_rows, today_str)
+    if not any(v is not None for v in today_plan_soc):
+        day_plan_for_soc = run_day_smart_q15_plan(
             date_str=today_str,
             pv_hourly=pv_forecast_today,
             load_hourly=load_forecast_today,
-            tomorrow_pv=[float(v) for v in pv_tomorrow],
-            tomorrow_load=[float(v) for v in load_tomorrow],
+            tomorrow_pv=pv_tomorrow,
+            tomorrow_load=load_tomorrow,
             cfg=cfg,
-            from_hour=0,
             rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
-            gap_mode="idle",
+            initial_soc_kwh=day_start_soc,
+            from_hour=0,
+            front_load_skip_leading_slots=0,
         )
-    today_plan_soc = soc_q15_from_q15_by_hour(day_plan_for_soc)
+        if today_timer_ov:
+            day_plan_for_soc = apply_plan_timer_overrides_if_any(
+                day_plan_for_soc,
+                date_str=today_str,
+                pv_hourly=pv_forecast_today,
+                load_hourly=load_forecast_today,
+                tomorrow_pv=[float(v) for v in pv_tomorrow],
+                tomorrow_load=[float(v) for v in load_tomorrow],
+                cfg=cfg,
+                from_hour=0,
+                rce_quarters=rce_today if len(rce_today) >= Q15_PER_HOUR * 24 else None,
+                gap_mode="idle",
+            )
+        today_plan_soc = soc_q15_from_q15_by_hour(day_plan_for_soc)
 
     tom_seed_kwh = tomorrow_chart_soc_seed_kwh(
         all_rows, today_str, smart_today, battery_cap, day_start_soc,
@@ -555,4 +595,5 @@ def build_chart_plan_soc_q15(
             gap_mode="idle",
         )
     tomorrow_plan_soc = soc_q15_from_q15_by_hour(day_plan_tomorrow_for_soc)
+    overlay_plan_row_soc_q15(tomorrow_plan_soc, all_rows, tomorrow_str)
     return today_plan_soc, tomorrow_plan_soc

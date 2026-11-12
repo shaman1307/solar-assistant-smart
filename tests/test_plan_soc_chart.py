@@ -274,3 +274,56 @@ def test_actual_soc_independent_of_plan_series():
     assert actual["today"][4 * 4] == 16.0
     assert plan["plan_soc_q15"]["today"][2 * 4] == 40.0
     assert plan["plan_soc_q15"]["today"][5 * 4] == 40.0
+
+
+def test_plan_row_soc_keeps_sale_on_the_planned_hour():
+    """Hour-7 discharge on the plan row drops the solid line at hour 7."""
+    from src.plan_orchestrator import overlay_plan_row_soc_q15
+
+    slots: list[float | None] = [None] * 96
+    rows = [
+        {
+            "plan_date": "2026-11-12",
+            "hour": 6,
+            "q15": [{"quarter": q, "soc": 88.0} for q in range(4)],
+        },
+        {
+            "plan_date": "2026-11-12",
+            "hour": 7,
+            "q15": [
+                {"quarter": 0, "soc": 84.0},
+                {"quarter": 1, "soc": 80.0},
+                {"quarter": 2, "soc": 76.0},
+                {"quarter": 3, "soc": 72.0},
+            ],
+        },
+    ]
+    overlay_plan_row_soc_q15(slots, rows, "2026-11-12")
+    assert slots[6 * 4] == 88.0
+    assert slots[7 * 4] == 84.0
+    assert slots[7 * 4 + 3] == 72.0
+    assert slots[8 * 4] is None
+    assert slots[9 * 4] is None
+
+
+def test_compose_replaces_locked_curve_once_rows_are_the_source():
+    from src.plan_simulation import compose_plan_soc_q15
+
+    existing = {
+        "today_date": "2026-11-12",
+        "plan_soc_day_locked": True,
+        "plan_soc_q15": {"today": [80.0] * 96, "tomorrow": [20.0] * 96},
+    }
+    fresh = {
+        "today_date": "2026-11-12",
+        "plan_soc_from_plan_rows": True,
+        "plan_soc_q15": {"today": [72.0] * 96, "tomorrow": [30.0] * 96},
+    }
+    out = compose_plan_soc_q15(existing, fresh)
+    assert out["today"][7 * 4] == 72.0
+
+    existing["plan_soc_from_plan_rows"] = True
+    existing["plan_soc_q15"] = {"today": [72.0] * 96, "tomorrow": [20.0] * 96}
+    fresh["plan_soc_q15"] = {"today": [10.0] * 96, "tomorrow": [30.0] * 96}
+    out = compose_plan_soc_q15(existing, fresh)
+    assert out["today"][7 * 4] == 72.0

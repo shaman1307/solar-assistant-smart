@@ -32,6 +32,7 @@ from .plan_hourly_actuals import (
 from .plan_orchestrator import (
     assemble_ea_plan_rows,
     build_chart_plan_soc_q15,
+    overlay_plan_row_soc_q15,
     run_horizon_smart_plans,
     soc_q15_from_q15_by_hour,
 )
@@ -92,6 +93,7 @@ def rebuild_tomorrow_plan_soc_from_ea_end(
     cfg: dict,
     today_date: str,
     ea_end_soc_pct: float | None,
+    plan_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[float | None]]:
     """Rebuild tomorrow chart SOC seeded from live EA end-of-today SOC.
 
@@ -145,7 +147,9 @@ def rebuild_tomorrow_plan_soc_from_ea_end(
             rce_quarters=rce_q,
             gap_mode="idle",
         )
-    return {"today": list(today), "tomorrow": soc_q15_from_q15_by_hour(day_plan)}
+    tomorrow = soc_q15_from_q15_by_hour(day_plan)
+    overlay_plan_row_soc_q15(tomorrow, plan_rows, tomorrow_str)
+    return {"today": list(today), "tomorrow": tomorrow}
 
 def _now_warsaw() -> datetime:
     from .influxdb import now_warsaw
@@ -591,6 +595,19 @@ def build_energy_arbitrage_plan(
         merged_load_q15_tomorrow=merged_load_q15_tomorrow,
     )
 
+    history_rows: list[dict] = []
+    if today_hourly:
+        history_rows = build_completed_history_rows(
+            today_str,
+            plan_from_hour,
+            today_hourly,
+            quarters_by_date,
+            cfg,
+            params,
+        )
+        # Seed only for empty/new-day SQLite. Same-day history is attached later
+        # via attach_immutable_history and never overwritten on rebuild.
+
     today_plan_soc, tomorrow_plan_soc = build_chart_plan_soc_q15(
         today_str=today_str,
         tomorrow_str=tomorrow_str,
@@ -607,6 +624,7 @@ def build_energy_arbitrage_plan(
         all_rows=all_rows,
         smart_today=smart_today,
         battery_cap=battery_cap,
+        history_rows=history_rows,
     )
 
 
@@ -623,19 +641,6 @@ def build_energy_arbitrage_plan(
         from_dt=schedule_from,
     )
     timer_schedule = derive_timer_schedule_q15(q15_schedule_rows, cfg, rules)
-
-    history_rows: list[dict] = []
-    if today_hourly:
-        history_rows = build_completed_history_rows(
-            today_str,
-            plan_from_hour,
-            today_hourly,
-            quarters_by_date,
-            cfg,
-            params,
-        )
-        # Seed only for empty/new-day SQLite. Same-day history is attached later
-        # via attach_immutable_history and never overwritten on rebuild.
 
     rows = all_rows
     today_plan_rows = [r for r in all_rows if r.get("plan_date") == today_str]
@@ -657,6 +662,7 @@ def build_energy_arbitrage_plan(
         },
         # Candidate for lock; plan_simulation freezes today once locked.
         "plan_soc_day_locked": False,
+        "plan_soc_from_plan_rows": True,
         "totals": today_totals,
         "tomorrow_remainder_rows": tomorrow_remainder_rows,
         "has_tomorrow_remainder": bool(tomorrow_remainder_rows),

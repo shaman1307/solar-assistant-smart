@@ -24,6 +24,7 @@ from .plan_cache_merge import (
     merge_incremental_plan,
     plan_needs_full_rebuild,
 )
+from .plan_orchestrator import overlay_plan_row_soc_q15
 from .simulation import (
     apply_locked_hour_labels_from_plan,
     ea_today_end_soc_pct,
@@ -168,18 +169,34 @@ def normalize_plan_soc_q15(plan: dict[str, Any] | None) -> dict[str, list[float 
     }
 
 
+def _apply_visible_plan_soc(result: dict[str, Any]) -> None:
+    """Solid today SOC from the history and plan rows on *result*."""
+    today_str = str(result.get("today_date") or "")
+    if not today_str:
+        return
+    today: list[float | None] = [None] * 96
+    overlay_plan_row_soc_q15(today, result.get("history_rows"), today_str)
+    overlay_plan_row_soc_q15(today, result.get("rows"), today_str)
+    if not any(v is not None for v in today):
+        return
+    bundle = dict(result.get("plan_soc_q15") or {})
+    bundle["today"] = today
+    result["plan_soc_q15"] = bundle
+    result["plan_soc_from_plan_rows"] = True
+
+
 def compose_plan_soc_q15(
     existing: dict[str, Any] | None,
     fresh: dict[str, Any] | None,
     *,
     refresh: bool = False,
 ) -> dict[str, list[float | None]]:
-    """Solid chart SOC: freeze *today* once locked; keep *tomorrow* fresh.
+    """Solid chart SOC: freeze today's plan-row curve; keep tomorrow fresh.
 
-    Today: as-if-00:00 day run, frozen while *plan_soc_day_locked* for the same
-    calendar day (unless *refresh*). Tomorrow: always the fresh simulator curve
-    (seeded from live EA end-of-today); it keeps moving until that day becomes
-    today and then freezes under the today lock.
+    Today stays frozen while *plan_soc_day_locked* for the same calendar day
+    (unless *refresh*, or the stored curve is not yet the plan-row curve).
+    Tomorrow is the day run for hours the horizon does not cover, with plan
+    rows written over the hours they schedule.
     """
     old_bundle = (existing or {}).get("plan_soc_q15") or {}
     new_bundle = (fresh or {}).get("plan_soc_q15") or {}
@@ -195,9 +212,16 @@ def compose_plan_soc_q15(
         and str(existing.get("today_date") or "")
         == str((fresh or {}).get("today_date") or "")
     )
+    # A curve built by the separate day run stays locked until the first
+    # plan-row curve replaces it. Later quarters keep that row curve.
+    row_curve = bool((fresh or {}).get("plan_soc_from_plan_rows"))
+    stale_separate_run = row_curve and not bool(
+        (existing or {}).get("plan_soc_from_plan_rows")
+    )
     locked = bool(
         same_day
         and not refresh
+        and not stale_separate_run
         and existing.get("plan_soc_day_locked")
         and any(v is not None for v in old_today)
     )
@@ -513,13 +537,16 @@ async def build_plan_simulation(
             attach_immutable_history(result, existing, now=now)
         # Chart: solid stays frozen across window-mismatch merge (unlock via
         # hourly_plan_refresh(unlock_plan_soc=True)).
+        _apply_visible_plan_soc(result)
         result["plan_soc_q15"] = compose_plan_soc_q15(existing, result)
+        today_date = str(result.get("today_date") or now.strftime("%Y-%m-%d"))
         result["plan_soc_q15"] = rebuild_tomorrow_plan_soc_from_ea_end(
             result["plan_soc_q15"],
             forecast=result.get("forecast") or forecast,
             cfg=cfg,
-            today_date=str(result.get("today_date") or now.strftime("%Y-%m-%d")),
+            today_date=today_date,
             ea_end_soc_pct=ea_today_end_soc_pct(result),
+            plan_rows=result.get("rows"),
         )
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
@@ -582,16 +609,20 @@ async def hourly_plan_refresh(
                 rules=rules,
             )
 
-        # Solid = as-if-00:00 day plan (frozen once); dashed = EA actual.
+        # Solid today SOC follows the plan rows. The first row-sourced curve
+        # replaces a curve from the separate day run, then stays frozen.
+        _apply_visible_plan_soc(result)
         result["plan_soc_q15"] = compose_plan_soc_q15(
             existing, result, refresh=unlock_plan_soc,
         )
+        today_date = str(result.get("today_date") or now.strftime("%Y-%m-%d"))
         result["plan_soc_q15"] = rebuild_tomorrow_plan_soc_from_ea_end(
             result["plan_soc_q15"],
             forecast=result.get("forecast") or forecast,
             cfg=cfg,
-            today_date=str(result.get("today_date") or now.strftime("%Y-%m-%d")),
+            today_date=today_date,
             ea_end_soc_pct=ea_today_end_soc_pct(result),
+            plan_rows=result.get("rows"),
         )
         result["plan_soc_day_locked"] = any(
             v is not None for v in (result["plan_soc_q15"].get("today") or [])
