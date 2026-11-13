@@ -1,8 +1,11 @@
 """SA timer sync rules."""
 
+import asyncio
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from src.sa_client import apply_hourly_schedule_to_sa
 from src.timer_plan import build_sa_schedule_from_hour_row, sa_schedule_matches_plan_row
 
 
@@ -117,7 +120,6 @@ def test_same_power_full_hours_are_one_window_with_the_last_soc():
     assert [(s["slot"], s["from"], s["to"], s["capacity_pct"]) for s in written] == [
         (1, "19:00", "23:00", 36),
     ]
-    assert schedule["skip_timer_flags"] is False
 
 
 def test_later_hour_of_the_same_window_sends_nothing():
@@ -139,7 +141,6 @@ def test_later_hour_of_the_same_window_sends_nothing():
     })
     assert schedule is not None
     assert schedule["discharge_slots_to_write"] == []
-    assert schedule["skip_timer_flags"] is True
 
 
 def test_changed_power_sends_that_hour_and_clears_the_old_window():
@@ -164,7 +165,33 @@ def test_changed_power_sends_that_hour_and_clears_the_old_window():
     assert [(s["slot"], s["from"], s["to"], s["power_kw"], s["capacity_pct"]) for s in written] == [
         (1, "21:00", "22:00", 7.5, 40),
     ]
-    assert schedule["skip_timer_flags"] is True
+
+
+def test_changed_window_keeps_a_checkbox_that_is_already_on():
+    rows = [
+        _dis_row(19, "Dis 19:00-20:00 8.0kW cap47%"),
+        _dis_row(21, "Dis 21:00-22:00 7.5kW cap40%"),
+    ]
+    schedule = build_sa_schedule_from_hour_row(rows, 21, _cfg(), existing={
+        "timed_discharge_enabled": True,
+        "timed_charge_enabled": False,
+        "discharge_slots": _empty_dis_slots(),
+    })
+    assert schedule is not None
+    assert schedule["discharge_slots_to_write"]
+    sent: dict = {}
+
+    async def capture(cfg, slim):
+        del cfg
+        sent.update(slim)
+        return True
+
+    with patch("src.sa_client.set_timer_schedule", side_effect=capture):
+        ok = asyncio.run(apply_hourly_schedule_to_sa({}, schedule))
+    assert ok is True
+    assert sent["timed_discharge_enabled"] is None
+    assert sent["timed_charge_enabled"] is None
+    assert sent["discharge_slots"][0]["power_kw"] == 7.5
 
 
 def test_partial_last_hour_is_sent_on_its_own():
@@ -190,7 +217,8 @@ def test_partial_last_hour_is_sent_on_its_own():
     ]
 
 
-def test_matching_recorded_window_is_left_when_a_later_hour_is_gone():
+def test_opening_hour_sends_even_when_an_old_slot_has_the_same_values():
+    """Hour 20 starts its own run. A leftover slot with the same numbers is not the previous hour."""
     rows = [
         _dis_row(20, "Dis 20:00-21:00 8.0kW cap44%"),
         _dis_row(22, "Dis 22:00-23:00 8.0kW cap36%"),
@@ -205,8 +233,11 @@ def test_matching_recorded_window_is_left_when_a_later_hour_is_gone():
         "discharge_slots": live,
     })
     assert schedule is not None
-    assert schedule["discharge_slots_to_write"] == []
-    assert schedule["skip_timer_flags"] is True
+    written = schedule["discharge_slots_to_write"]
+    assert written[0]["from"] == "20:00"
+    assert written[0]["to"] == "21:00"
+    assert written[0]["power_kw"] == 8.0
+    assert written[0]["capacity_pct"] == 44
 
 
 def test_same_power_run_is_rewritten_when_the_recorded_window_is_short():
@@ -263,7 +294,6 @@ def test_charge_same_power_hours_use_the_last_soc_then_skip():
     })
     assert second is not None
     assert second["charge_slots_to_write"] == []
-    assert second["skip_timer_flags"] is True
 
 
 def test_write_metrics_retries_crc_then_succeeds():

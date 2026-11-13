@@ -1566,9 +1566,10 @@ def _timer_window_writes(
     """SA slots to write for this hour's charge or discharge.
 
     Consecutive full hours of the same power are one window. The first hour
-    sends that whole range with the SOC of the last hour. A later hour sends
-    nothing when the inverter already has that range, power, and SOC. A partial
-    hour, or a full hour whose power differs, is sent as its own window.
+    sends that whole range with the SOC of the last hour, even when a slot
+    already has those values. A later hour of that same run sends nothing
+    when the inverter already has that range, power, and SOC. A partial hour,
+    or a full hour whose power differs, is sent as its own window.
     """
     slot_kind = "charge" if kind == "chg" else "discharge"
     slots = _ensure_three_slots(existing_slots, slot_kind)
@@ -1627,7 +1628,8 @@ def _timer_window_writes(
         desired["grid"] = True
         desired["generator"] = False
 
-    if any(_timer_slot_matches(slot, desired) for slot in slots):
+    continues_previous = idx > start
+    if continues_previous and any(_timer_slot_matches(slot, desired) for slot in slots):
         slots[0] = desired
         return slots, []
 
@@ -1698,10 +1700,6 @@ def build_sa_schedule_from_hour_row(
     if not timed_charge and not timed_discharge:
         return None
 
-    flags_match = (
-        bool(existing.get("timed_charge_enabled")) == timed_charge
-        and bool(existing.get("timed_discharge_enabled")) == timed_discharge
-    )
     return {
         "target_hour": hour,
         "planned_action": row.get("action"),
@@ -1712,8 +1710,9 @@ def build_sa_schedule_from_hour_row(
         "discharge_slots": discharge_slots,
         "charge_slots_to_write": charge_slots_to_write,
         "discharge_slots_to_write": discharge_slots_to_write,
-        "skip_timer_flags": flags_match,
         "charge_current_a": existing.get("charge_current_a"),
+        "live_timed_charge_enabled": existing.get("timed_charge_enabled"),
+        "live_timed_discharge_enabled": existing.get("timed_discharge_enabled"),
     }
 
 
@@ -1940,45 +1939,9 @@ def build_hourly_schedule(
     }
 
 
-def _schedule_timed_enabled(schedule: dict[str, Any]) -> bool:
-    return bool(schedule.get("timed_charge_enabled") or schedule.get("timed_discharge_enabled"))
-
-
 def _slot_covers_minute(slot: dict[str, Any], minute_of_day: int) -> bool:
     if not _slot_is_active(slot):
         return False
     start = _parse_hhmm_to_min(slot.get("from", "00:00"))
     end = _parse_hhmm_to_min(slot.get("to", "00:00"))
     return start is not None and end is not None and start <= minute_of_day < end
-
-
-def pick_sa_timer_schedule(
-    rows: list[dict],
-    *,
-    now_hour: int,
-    cfg: dict,
-    existing: dict[str, Any] | None = None,
-    proposed: dict[str, Any] | None = None,
-    now_minute: int | None = None,
-) -> dict[str, Any] | None:
-    """SA write payload: q15 block covering now, else timed current hour, else next hour."""
-    existing = existing or {}
-    minute = now_minute if now_minute is not None else now_hour * 60
-
-    if proposed and _schedule_timed_enabled(proposed):
-        discharge = (proposed.get("discharge_slots") or [{}])[0]
-        charge = (proposed.get("charge_slots") or [{}])[0]
-        if proposed.get("timed_discharge_enabled") and _slot_covers_minute(discharge, minute):
-            return proposed
-        if proposed.get("timed_charge_enabled") and _slot_covers_minute(charge, minute):
-            return proposed
-
-    current = build_hourly_schedule(rows, now_hour, cfg, existing)
-    if _schedule_timed_enabled(current):
-        return current
-
-    next_h = (now_hour + 1) % 24
-    upcoming = build_hourly_schedule(rows, next_h, cfg, existing)
-    if _schedule_timed_enabled(upcoming):
-        return upcoming
-    return None

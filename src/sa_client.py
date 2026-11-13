@@ -1060,41 +1060,41 @@ async def set_timer_schedule(cfg: dict, schedule: dict[str, Any]) -> bool:
         return False
 
 
+def _checkbox_write(desired: bool, live: Any) -> bool | None:
+    """None when the inverter checkbox is already in the desired state."""
+    if live is None:
+        return desired
+    if bool(live) == desired:
+        return None
+    return desired
+
+
 async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bool:
-    """Write the current charge/discharge window. Skip when the inverter already has it."""
-    write_chg = schedule.get("charge_slots_to_write")
-    write_dis = schedule.get("discharge_slots_to_write")
-    skip_flags = bool(schedule.get("skip_timer_flags"))
-    slim: dict[str, Any] = {
-        "timed_charge_enabled": None if skip_flags else bool(schedule.get("timed_charge_enabled")),
-        "timed_discharge_enabled": None if skip_flags else bool(schedule.get("timed_discharge_enabled")),
-        "charge_current_a": schedule.get("charge_current_a"),
-        "charge_slots": [],
-        "discharge_slots": [],
-    }
-    if write_chg is not None:
-        slim["charge_slots"] = list(write_chg)
-    elif schedule.get("timed_charge_enabled"):
-        slim["charge_slots"] = [schedule.get("charge_slots", [{}])[0]]
-    if write_dis is not None:
-        slim["discharge_slots"] = list(write_dis)
-    elif schedule.get("timed_discharge_enabled"):
-        slim["discharge_slots"] = [schedule.get("discharge_slots", [{}])[0]]
-    if not slim["charge_slots"] and not slim["discharge_slots"]:
-        if skip_flags:
-            log.info(
-                "Hourly timer already covers hour=%s",
-                schedule.get("target_hour"),
-            )
-            return True
-        if slim["timed_charge_enabled"] is None and slim["timed_discharge_enabled"] is None:
-            log.info("Hourly schedule apply skipped — no timed charge/discharge enabled")
-            return True
-        return await set_timed_power_flags(
-            cfg,
-            timed_charge_enabled=bool(schedule.get("timed_charge_enabled")),
-            timed_discharge_enabled=bool(schedule.get("timed_discharge_enabled")),
+    """Write this hour's charge/discharge window. An empty window list sends nothing.
+
+    A timed checkbox is written only when it differs from the inverter.
+    """
+    write_chg = list(schedule.get("charge_slots_to_write") or [])
+    write_dis = list(schedule.get("discharge_slots_to_write") or [])
+    if not write_chg and not write_dis:
+        log.info(
+            "Hourly timer already covers hour=%s",
+            schedule.get("target_hour"),
         )
+        return True
+    slim: dict[str, Any] = {
+        "timed_charge_enabled": _checkbox_write(
+            bool(schedule.get("timed_charge_enabled")),
+            schedule.get("live_timed_charge_enabled"),
+        ),
+        "timed_discharge_enabled": _checkbox_write(
+            bool(schedule.get("timed_discharge_enabled")),
+            schedule.get("live_timed_discharge_enabled"),
+        ),
+        "charge_current_a": schedule.get("charge_current_a"),
+        "charge_slots": write_chg,
+        "discharge_slots": write_dis,
+    }
     ok = await set_timer_schedule(cfg, slim)
     if ok:
         log.info(
@@ -1106,28 +1106,6 @@ async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bo
             [s.get("slot") for s in slim["discharge_slots"]],
         )
     return ok
-
-
-async def apply_plan_to_sa(
-    cfg: dict,
-    sim: dict[str, Any],
-) -> bool:
-    """Push plan-derived timer schedule (+ grid charge permission) to SA."""
-    schedule = sim.get("proposed_schedule") or {}
-    if not await set_timer_schedule(cfg, schedule):
-        return False
-
-    charge_pwr = max(
-        (float(s.get("power_kw", 0)) for s in schedule.get("charge_slots", [])),
-        default=0.0,
-    )
-    # Policy 1: Grid charge Enabled only while Timed charge is active.
-    return await set_grid_charging(
-        cfg,
-        enabled=bool(schedule.get("timed_charge_enabled")),
-        power_kw=charge_pwr or 2.0,
-        verify=True,
-    )
 
 
 # ---------------------------------------------------------------------------

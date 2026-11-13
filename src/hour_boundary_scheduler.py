@@ -23,6 +23,7 @@ from .influxdb import now_warsaw
 from .sqlite_store import read_plan
 from .timer_plan import (
     _slot_covers_minute,
+    _timer_slot_matches,
     build_sa_schedule_from_hour_row,
     hour_has_timer_schedule,
     timer_charge_active_at,
@@ -145,6 +146,30 @@ async def _clear_stale_timed_charge(
     else:
         log.info("SA timer sync — cleared timed_charge (%s)", reason)
     return status
+
+
+def _quarter_retry_needs_write(
+    schedule: dict[str, Any] | None,
+    rules: dict[str, Any],
+) -> bool:
+    """True when a quarter tick still has a window the inverter does not hold.
+
+    The opening hour of a run lists a write even if a leftover slot has the
+    same values. A later tick of that hour sends only when that window is absent.
+    """
+    if not schedule:
+        return False
+    for write_key, live_key in (
+        ("charge_slots_to_write", "charge_slots"),
+        ("discharge_slots_to_write", "discharge_slots"),
+    ):
+        live = rules.get(live_key) or []
+        for slot in schedule.get(write_key) or []:
+            if float(slot.get("power_kw") or 0) <= 0:
+                continue
+            if not any(_timer_slot_matches(existing, slot) for existing in live):
+                return True
+    return False
 
 
 async def _sync_timer_from_hour_row(
@@ -400,14 +425,7 @@ async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
             schedule = build_sa_schedule_from_hour_row(
                 rows, now.hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
             )
-            needs_write = bool(
-                schedule
-                and (
-                    schedule.get("charge_slots_to_write")
-                    or schedule.get("discharge_slots_to_write")
-                    or not schedule.get("skip_timer_flags")
-                )
-            )
+            needs_write = _quarter_retry_needs_write(schedule, rules)
             if needs_write or (
                 schedule is None and _sa_missing_active_plan_timer(timer_txt, now, rules)
             ):

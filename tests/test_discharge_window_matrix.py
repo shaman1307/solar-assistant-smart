@@ -88,25 +88,23 @@ def _sync(rows: list[dict], hour: int, live: list[dict], *, discharge_on: bool):
     written = list(schedule["discharge_slots_to_write"])
     for slot in written:
         live[int(slot["slot"]) - 1] = dict(slot)
-    return written, schedule["skip_timer_flags"]
+    return written
 
 
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
 def test_unchanged_discharge_windows(n: int):
     rows = _rows(n)
     live = _empty_slots()
-    written, skip_flags = _sync(rows, START, live, discharge_on=False)
+    written = _sync(rows, START, live, discharge_on=False)
     last_cap = 50 - (n - 1)
     end_hour = START + n
-    assert skip_flags is False
     assert [_signature(s) for s in written] == [
         (1, f"{START:02d}:00", f"{end_hour:02d}:00", 8.0, last_cap),
     ]
 
     for step in range(1, n):
-        written, skip_flags = _sync(rows, START + step, live, discharge_on=True)
+        written = _sync(rows, START + step, live, discharge_on=True)
         assert written == []
-        assert skip_flags is True
 
 
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
@@ -120,8 +118,7 @@ def test_later_power_change_rewrites_the_window(n: int):
     live = _empty_slots()
     _sync(_rows(n), START, live, discharge_on=False)
 
-    written, skip_flags = _sync(rows, START + 1, live, discharge_on=True)
-    assert skip_flags is True
+    written = _sync(rows, START + 1, live, discharge_on=True)
     assert written
     head = written[0]
     assert head["from"] == f"{START + 1:02d}:00"
@@ -135,8 +132,7 @@ def test_dropped_tail_shortens_the_recorded_window():
     live = _empty_slots()
     _sync(rows, START, live, discharge_on=False)
     kept = [row for row in rows if row["hour"] != START + 3]
-    written, skip_flags = _sync(kept, START + 1, live, discharge_on=True)
-    assert skip_flags is True
+    written = _sync(kept, START + 1, live, discharge_on=True)
     assert written[0]["from"] == f"{START:02d}:00"
     assert written[0]["to"] == f"{START + 3:02d}:00"
     assert written[0]["capacity_pct"] == 50 - 2
