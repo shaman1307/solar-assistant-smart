@@ -16,6 +16,9 @@ from .plan_physics import (
 HOURS_PER_DAY = 24
 # Calendar noon bound when that day has no peak hours on the selected tariff.
 _ALL_OFFPEAK_COVER_HOUR_END = 12
+# Discharge from 15:00 holds house load until PV covers it, and no later than 13:00.
+_EVENING_DISCHARGE_START_HOUR = 15
+_NEXT_DAY_SURVIVE_HOUR_END = 13
 # Peak-deficit purchase target: buy 20% more than the walk so a heavier
 # evening hour does not dump the pack onto peak import at the floor.
 GRID_CHARGE_TARGET_HEADROOM = 1.20
@@ -159,8 +162,10 @@ def reserve_soc_kwh_from_step(
 
     Sums load deficits from step+1 until the first next-day hour where PV covers
     load (evening-started walks must cross midnight), then adds
-    *reserve_floor_kwh* (min SOC). At the end of today's last discharge hour this
-    is the SOC that must remain in the battery.
+    *reserve_floor_kwh* (min SOC). A walk that starts at 15:00 or later stops at
+    13:00 the next day when PV has not covered the house by then, so that hour
+    ends at min SOC. At the end of today's last discharge hour this is the SOC
+    that must remain in the battery.
 
     Does **not** by itself justify grid→battery charging — see
     `grid_charge_target_soc_kwh_from_step`.
@@ -278,6 +283,7 @@ def post_discharge_reserve_soc_kwh(
 
     Counts house deficits from the first hour *after* *last_discharge_hour*
     through the first next-day hour that covers load, then adds min-SOC floor.
+    Discharge at 15:00 or later counts no further than 13:00 next day.
     Mid-hour Dis ends use ``apply_post_discharge_reserve_floor`` (last export
     step) so load after the Dis window stays inside the budget.
     """
@@ -505,6 +511,15 @@ def _forward_soc_need_from_step(
         return bound_cache[day_index]
 
     while j < len(pv_series):
+        if (
+            not peak_deficits_only
+            and start_local_hour >= _EVENING_DISCHARGE_START_HOUR
+        ):
+            abs_j = global_step_offset + j
+            if abs_j // slots_per_day > start_day:
+                local_h = (abs_j % slots_per_day) // slots_per_hour
+                if local_h >= _NEXT_DAY_SURVIVE_HOUR_END:
+                    break
         if peak_deficits_only:
             step_day = (global_step_offset + j) // slots_per_day
             step_hour = ((global_step_offset + j) % slots_per_day) // slots_per_hour

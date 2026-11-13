@@ -74,6 +74,25 @@ def test_post_discharge_reserve_from_hour_after_last_dis():
     assert reserve == pytest.approx(floor + 12 * 0.2)
 
 
+def test_evening_discharge_stops_at_13_when_pv_never_covers():
+    """After 15:00, no PV cover by 13:00 → deficits through hour 12 plus min SOC."""
+    # Hours 21..23 today and 00..16 tomorrow. Cover only at tomorrow 16.
+    hours = 3 + 17
+    pv = [0.0] * (4 * (hours - 1)) + [0.5] * 4
+    load = [0.2] * len(pv)
+    day0 = _weekday_day_buys()
+    day1 = _weekday_day_buys()
+    buy = _q15_buys(day0[21:] + day1[:17])
+    floor = 1.5
+    reserve = post_discharge_reserve_soc_kwh(
+        21, pv, load, floor, 1.0, 1.0, 0.01,
+        buy_series=buy, offpeak_buy=OFF,
+        slots_per_hour=4, global_step_offset=21 * 4,
+    )
+    # 22, 23 and tomorrow 00..12 inclusive = 15 hours.
+    assert reserve == pytest.approx(floor + 15 * 4 * 0.2)
+
+
 def test_discharge_cap_ceils_reserve_soc_pct():
     """Fractional survive floor rounds up so SA never stops below the model."""
     assert discharge_cap_pct_from_row({"reserve_soc_pct": 34.2, "soc": 40.0}, 16) == 35
