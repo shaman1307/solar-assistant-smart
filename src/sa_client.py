@@ -598,9 +598,18 @@ def _build_schedule_writes(
         discharge_slot_nums = (1, 2, 3)
     p = _INVERTER_PREFIX
     writes: list[tuple[str, str]] = []
-    # Policy: Grid charge Enabled only while Timed charge is active; else Disabled.
-    # Slot power is ignored when max_grid_charge_current is stale (e.g. 34 A from
-    # a 2 kW UI toggle). Write amps from slot kW, capped at 100 A so SA does not 422.
+    slot_kw = max(
+        (
+            float(s.get("power_kw") or 0)
+            for s in schedule.get("charge_slots") or []
+            if int(s.get("slot") or 0) in charge_slot_nums
+        ),
+        default=0.0,
+    )
+    # Grid charge stays Enabled only while Timed charge is active.
+    # E04A is the slot charge power. E205 is a separate mains-charge current
+    # ceiling. The inverter does not derive E205 from E04A, so a slot-power
+    # update writes the amps for that power even when the enable flag is unchanged.
     if settings is not None and schedule.get("timed_charge_enabled") is not None:
         writes.append(
             (
@@ -608,22 +617,29 @@ def _build_schedule_writes(
                 _grid_charge_switch(bool(schedule["timed_charge_enabled"])),
             )
         )
-        if schedule.get("timed_charge_enabled"):
-            slot_kw = max(
-                (
-                    float(s.get("power_kw") or 0)
-                    for s in schedule.get("charge_slots") or []
-                    if int(s.get("slot") or 0) in charge_slot_nums
-                ),
-                default=0.0,
+    # E205 is a separate ceiling from the slot power. Write it only when this
+    # window's amps differ from the value already on the inverter.
+    new_a = _grid_charge_current_a(slot_kw) if slot_kw > 0 else 0
+    prev_a = schedule.get("charge_current_a")
+    current_unchanged = False
+    if prev_a is not None:
+        try:
+            current_unchanged = int(round(float(prev_a))) == new_a
+        except (TypeError, ValueError):
+            current_unchanged = False
+    if (
+        settings is not None
+        and settings.get("charge_current_limit")
+        and new_a > 0
+        and schedule.get("timed_charge_enabled") is not False
+        and not current_unchanged
+    ):
+        writes.append(
+            (
+                settings["charge_current_limit"],
+                str(new_a),
             )
-            if slot_kw > 0 and settings.get("charge_current_limit"):
-                writes.append(
-                    (
-                        settings["charge_current_limit"],
-                        str(_grid_charge_current_a(slot_kw)),
-                    )
-                )
+        )
     if schedule.get("timed_charge_enabled") is not None:
         writes.append((f"{p}/timed_charge", _sa_switch(bool(schedule["timed_charge_enabled"]))))
     if schedule.get("timed_discharge_enabled") is not None:
@@ -1052,6 +1068,7 @@ async def apply_hourly_schedule_to_sa(cfg: dict, schedule: dict[str, Any]) -> bo
     slim: dict[str, Any] = {
         "timed_charge_enabled": None if skip_flags else bool(schedule.get("timed_charge_enabled")),
         "timed_discharge_enabled": None if skip_flags else bool(schedule.get("timed_discharge_enabled")),
+        "charge_current_a": schedule.get("charge_current_a"),
         "charge_slots": [],
         "discharge_slots": [],
     }

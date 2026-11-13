@@ -1713,6 +1713,7 @@ def build_sa_schedule_from_hour_row(
         "charge_slots_to_write": charge_slots_to_write,
         "discharge_slots_to_write": discharge_slots_to_write,
         "skip_timer_flags": flags_match,
+        "charge_current_a": existing.get("charge_current_a"),
     }
 
 

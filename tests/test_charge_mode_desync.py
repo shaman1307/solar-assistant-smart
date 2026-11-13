@@ -71,7 +71,50 @@ def test_charge_schedule_writes_skip_unsupported_srne_registers():
     assert ("inverter_1/charge_power_slot_1", "6000") in writes
     assert ("inverter_1/charge_current", "100") in writes
     assert _grid_charge_current_a(6.0) == 100
+    assert _grid_charge_current_a(5.8) == 100  # 5800 / 58, SA cap 100 A
+    assert _grid_charge_current_a(3.0) == 51  # 3000 / 58
     assert _grid_charge_current_a(4.0) == 68  # 4000 / 58
+
+
+def test_charge_slot_power_rewrites_mains_current_when_flag_stays_on():
+    """E205 is not derived from E04A. A later higher slot must raise the amps."""
+    settings = {
+        "grid_charge_switch": "inverter_1/grid_charge",
+        "charge_current_limit": "inverter_1/max_grid_charge_current",
+    }
+    schedule = {
+        "timed_charge_enabled": None,
+        "charge_slots": [{
+            "slot": 1,
+            "from": "05:00",
+            "to": "06:00",
+            "capacity_pct": 29,
+            "voltage_v": 56.0,
+            "power_kw": 5.8,
+        }],
+    }
+    writes = _build_schedule_writes(
+        schedule,
+        charge_slot_nums=(1,),
+        discharge_slot_nums=(),
+        settings=settings,
+    )
+    topics = [t for t, _ in writes]
+    assert "inverter_1/timed_charge" not in topics
+    assert "inverter_1/grid_charge" not in topics
+    assert ("inverter_1/charge_power_slot_1", "5800") in writes
+    assert ("inverter_1/max_grid_charge_current", "100") in writes
+
+    same = dict(schedule)
+    same["charge_current_a"] = 100
+    held = _build_schedule_writes(
+        same,
+        charge_slot_nums=(1,),
+        discharge_slot_nums=(),
+        settings=settings,
+    )
+    assert "inverter_1/max_grid_charge_current" not in [t for t, _ in held]
+    assert ("inverter_1/charge_power_slot_1", "5800") in held
 
 
 def test_limit_home_not_due_during_active_charge_window():
