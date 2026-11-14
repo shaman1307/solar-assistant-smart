@@ -1,4 +1,4 @@
-# Opis zewnętrznego systemu EMS — program PME Część 2 z FM
+# Opis zewnętrznego systemu EMS — Solar Smart
 
 **Magazyn energii** · mikroinstalacja OZE · falownik hybrydowy SRNE · SolarAssistant · Solar Smart (Raspberry Pi 4)
 
@@ -25,7 +25,7 @@ W instalacji **nie występuje magazyn ciepła**. Łańcuch priorytetów dla tego
 | Falownik hybrydowy **SRNE** | Sterowanie przepływami PV, magazynu, obciążenia i sieci |
 | **Magazyn energii** | Akumulator podłączony do falownika |
 | **SolarAssistant** | Lokalna bramka REST API do falownika (harmonogramy, tryby pracy) |
-| **Solar Smart** (Raspberry Pi 4, rok produkcji 2021) | Zewnętrzny EMS: prognozy, plan dobowy, automatyzacja przy włączonym trybie Smart |
+| **Solar Smart** (Raspberry Pi 4, rok produkcji 2021) | Zewnętrzny EMS: prognozy, plan dobowy, automatyzacja w trybie Smart lub Smart+ |
 | Baza historii invertera (**IHDB**) | Dane pomiarowe rzeczywistego zużycia i produkcji |
 | **Cloudflare Access** | Zdalny, uwierzytelniony dostęp do interfejsu EMS |
 
@@ -35,55 +35,44 @@ EMS nie jest wyłącznie funkcją wbudowaną w falownik — stanowi **osobny sys
 
 ## 3. Algorytm sterowania — priorytety i ograniczenia
 
-### 3.1. Kolejność priorytetów (zgodna z programem PME)
+### 3.1. Kolejność priorytetów
 
 1. **Bezpośrednie pokrycie zapotrzebowania** — energia z PV zasila bieżące obciążenie domu.
 2. **Magazynowanie energii elektrycznej** — nadwyżka PV po pokryciu obciążenia ładuje akumulator.
-3. **Oddanie nadwyżki do sieci** — wyłącznie po zaspokojeniu zużycia i naładowaniu magazynu w dostępnej pojemności, z dodatkowymi ograniczeniami opisanymi poniżej.
+3. **Oddanie nadwyżki do sieci** — tylko nadwyżka: PV przy pełnym magazynie albo kontrolowane rozładowanie magazynu do sieci. Warunki ekonomiczne i rezerwa — w rozdziale 4 «Ograniczenie eksportu w godzinach szczytowej produkcji PV».
 
 Na falowniku utrzymywany jest priorytet **Load first** (Solar power priority).
 
 ### 3.2. Planowanie co 15 minut
 
-Obliczenia prowadzone są w module optymalizacji (`plan_optimizer.py`, `plan_spill.py`) z wykorzystaniem m.in. funkcji:
+Plan na resztę dnia i na jutro jest liczony co 15 minut z prognozy produkcji, zużycia, stanu magazynu i cen. Zakończone godziny zostają na pomiarach. Bieżąca godzina zachowuje akcję i okno timera ustalone o pełnej godzinie.
 
-- `pv_load_energy_split` — podział energii PV między obciążenie a nadwyżkę;
-- `simulate_hour` — symulacja jednego kroku czasowego;
-- `_reserve_soc_kwh_from_step` — wyznaczenie rezerwy energii w magazynie do momentu, gdy PV ponownie pokryje obciążenie domu;
-- `build_extended_pv_load_for_reserve` — rozszerzenie prognozy na kolejny dzień wyłącznie w celu poprawnego wyliczenia rezerwy nocnej;
-- `battery_export_break_even_rce`, `battery_export_step_allowed` — warunki dopuszczalności eksportu z magazynu;
-- `_allow_grid_charge` — dozwolone ładowanie z sieci tylko w taryfie off-peak i tylko w celu odtworzenia rezerwy lub pokrycia deficytu przy braku PV.
+1. PV pokrywa obciążenie. Niedobór pokrywa magazyn, a dopiero resztę — import z sieci.
+2. Nadwyżka PV ładuje magazyn. Eksport PV do sieci występuje przy pełnym magazynie.
+3. Rozładowanie wieczorne po 15:00 zostawia w magazynie energię na dom do godziny, w której prognoza PV przekracza zużycie, nie później niż do **13:00** następnego dnia. Jeśli do 13:00 słońce nadal nie pokrywa domu, o 13:00 w magazynie zostaje minimalny stan naładowania.
+4. Eksport z magazynu jest tylko ponad tę rezerwę i tylko gdy cena sprzedaży RCE jest wyższa niż wartość zużycia własnego w taryfie G12 off-peak.
+5. Ładowanie z sieci jest w godzinach off-peak, na odbudowę rezerwy albo na niedobór bez PV.
 
-**Kolejność w praktyce:**
+### 3.3. Realizacja na falowniku
 
-1. PV → obciążenie; przy deficycie → magazyn; dopiero reszta → import z sieci.
-2. Nadwyżka PV → ładowanie magazynu; eksport PV tylko przy pełnym magazynie.
-3. Rezerwa nocna — magazyn nie może być rozładowany poniżej poziomu wymaganego do zasilania domu do rana (wg prognozy obciążenia i PV).
-4. Eksport z magazynu — tylko ponad rezerwę i tylko gdy cena sprzedaży (RCE) przewyższa wartość autokonsumpcji przy taryfie G12 off-peak; w przeciwnym razie energia pozostaje na potrzeby gospodarstwa.
-5. Ładowanie z sieci w nocy — wyłącznie off-peak, wyłącznie dla rezerwy lub deficytu bez PV.
-
-Plan dobowy jest odnawiany co godzinę (`build_plan_simulation`).
-
-### 3.3. Realizacja na falowniku (tryb Smart)
-
-Przy włączonym **Smart mode** plan jest przekładany na polecenia SolarAssistant:
-
-| Funkcja | Działanie |
+| Pozycja | Działanie |
 |---------|-----------|
-| `build_sa_schedule_from_hour_row` | Ustawienie harmonogramu ładowania/rozładowania na następną godzinę |
-| `run_work_mode_hour_start` | Tryb **On-grid** przy zaplanowanym rozładowaniu do sieci lub SOC 100% |
-| `run_work_mode_limit_home` | Co 15 minut: **Limit power to home load** — ograniczenie niekontrolowanego eksportu, gdy brak aktywnego okna rozładowania w harmonogramie |
+| **Off** | Plan i historia. Brak zapisu na falownik. |
+| **Smart** | Na początku godziny zapis okna ładowania albo rozładowania zgodnie z planem. |
+| **Smart+** | Te same zapisy co Smart. W tanim oknie porannym dokupowana jest energia, gdy późniejsze godziny mają cenę sprzedaży nie niższą niż próg Super RCE, a następnie jest sprzedawana w tych godzinach. Dokupienie nie podnosi stanu naładowania powyżej 95% na początku pierwszej z tych godzin i nie jest dodawane, gdy magazyn w oknie porannym jest już powyżej 90%. |
+
+Poza zaplanowanym oknem rozładowania falownik pracuje w trybie **Limit power to home load**, co ogranicza niekontrolowany eksport. Przy zaplanowanym rozładowaniu do sieci ustawiany jest tryb **On-grid**.
 
 ---
 
 ## 4. Ograniczenie eksportu w godzinach szczytowej produkcji PV
 
-System realizuje wymóg ograniczenia **niekontrolowanego eksportu** w szczycie produkcji fotowoltaicznej poprzez:
+Nieplanowany eksport w godzinach szczytowej produkcji PV jest ograniczony przez:
 
 - brak planowania eksportu z magazynu w godzinach dziennych przy typowych niskich cenach RCE względem autokonsumpcji (G12);
 - eksport nadwyżki PV do sieci wyłącznie po zapełnieniu magazynu;
 - wymuszanie trybu **Limit home** na falowniku poza zaplanowanym oknem rozładowania;
-- rezerwę SOC uniemożliwiającą rozładowanie magazynu „pod eksport” kosztem zasilania domu do rana.
+- rezerwę stanu naładowania: wieczorny rozład nie schodzi poniżej energii potrzebnej domowi do pokrycia zużycia przez PV, najpóźniej do 13:00 następnego dnia; bez takiego pokrycia o 13:00 zostaje minimum.
 
 ---
 
@@ -100,18 +89,6 @@ Przełączenie w tryb autonomiczny jest świadomą czynnością operatora (hardw
 
 ---
 
-## 6. Cyberbezpieczeństwo
+## 6. Podsumowanie
 
-Zgodnie z warunkami programu, wymogi wynikające z dokumentów UE (NIS2, CRA, RED DA) oraz normy ETSI EN 303 645 dotyczą urządzeń **wyprodukowanych po dacie wejścia w życie** tych aktów.
-
-- **Raspberry Pi 4** (host EMS) — rok produkcji **2021**, przed obowiązkowym RED DA (01.08.2025) i pełnym CRA (11.12.2027).
-- **Solar Smart** — wdrożenie własne na istniejącym sprzęcie.
-- **Falownik i magazyn** — wymogi cyber dla urządzeń wyprodukowanych po 08.2025 leżą po stronie producenta sprzętu.
-
-Stosowane środki ochrony EMS: Cloudflare Access, brak publicznego dostępu do API bez uwierzytelnienia, hasło SolarAssistant w konfiguracji lokalnej, aktualizacje systemu, usługa systemowa z autostartem (`smart.service`).
-
----
-
-## 7. Podsumowanie
-
-Zewnętrzny system EMS **Solar Smart** na Raspberry Pi współpracuje z falownikiem SRNE przez SolarAssistant i realizuje inteligentne sterowanie przepływem energii zgodnie z priorytetami programu PME dla magazynu energii, z ograniczeniem niekontrolowanego eksportu w szczycie produkcji PV oraz z możliwością pracy wyspowej zapewnioną na poziomie instalacji elektrycznej.
+Zewnętrzny system EMS **Solar Smart** na Raspberry Pi współpracuje z falownikiem SRNE przez SolarAssistant. Priorytet przepływu to zużycie, potem magazyn, potem sieć. Eksport w szczycie produkcji PV jest ograniczony. Praca wyspowa jest zapewniona na poziomie instalacji elektrycznej.

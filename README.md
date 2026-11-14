@@ -6,7 +6,7 @@ Solar Smart listens on **port 8000**. SolarAssistant stays on its default port *
 
 ## Screenshots
 
-| Dashboard — live PV / battery / grid | Rules — SRNE timer | Rules — energy arbitrage plan |
+| Dashboard — live PV / battery / grid | Rules — timer and Smart mode | Rules — forecast chart and day plan |
 |---|---|---|
 | <img src="docs/images/dashboard.png" width="400" alt="Live dashboard" /> | <img src="docs/images/rules-inverter-params.png" width="400" alt="Timer Schedule and inverter parameters" /> | <img src="docs/images/energy-arbitrage-plan.png" width="400" alt="Energy arbitrage plan table" /> |
 
@@ -42,8 +42,9 @@ flowchart LR
 
 - Every **15 minutes** the app rebuilds the plan for the rest of today and tomorrow from live load, battery SOC, weather, and prices.
 - **Finished hours** stay on **IHDB** measurements. The **current hour** keeps the action and timer chosen at `:00`; only measured PV, load, and SOC catch up during the hour. Later hours are replanned when forecasts or prices change.
-- The optimizer schedules grid import, battery charge, and export to lower the **G12 bill**, within battery limits: cheaper imports, export when RCE is worth it, enough reserve for the night and the next sunny hours.
-- With **Smart mode** on, at the **start of each hour** the Pi writes that hour’s timer to SolarAssistant and keeps work mode aligned with the plan. Smart mode is **off by default**; the plan and monthly history work without writing to the inverter.
+- The optimizer schedules grid import, battery charge, and export to lower the **G12 bill**, within battery limits: cheaper imports, export when RCE is worth it.
+- Evening discharge after 15:00 leaves enough battery to cover the house until solar production exceeds consumption, and no later than **13:00** the next day. If production still does not cover the house by 13:00, the battery is at its minimum state of charge at 13:00.
+- **Off** shows the plan and does not write to the inverter. **Smart** and **Smart+** write that hour’s timer at the **start of each hour** and keep work mode aligned with the plan.
 
 ## Product
 
@@ -51,7 +52,7 @@ flowchart LR
 - **Power Management** — scale PV and consumption forecast totals up to 2 days ahead. Saved in config, applied to the plan. Cleared overnight so the next day starts from fresh forecasts.
 - **EV Charging** — day and night charge windows (time and power) up to 2 days ahead. Enabled windows add load to the forecast. Past EV sessions are excluded from the weekday load profile.
 - **Energy arbitrage** (Rules) — rolling today + tomorrow: planned action, grid import/export, battery SOC, estimated costs.
-- **Timer Schedule** (Rules) — view and edit SRNE charge/discharge slots. With Smart mode on, the Pi applies the plan automatically.
+- **Timer Schedule** (Rules) — view and edit SRNE charge and discharge windows. In **Smart** or **Smart+**, the Pi applies the plan automatically.
 - **Monthly history** — closed calendar months from IHDB: daily production, import, export, Energy Cost, Service Cost, and the running **Energy Deposit Total**.
 
 ### Plan cost columns
@@ -66,6 +67,12 @@ flowchart LR
 **Energy Deposit Total** is the running net-billing credit pool in PLN: export at RCE adds to the pool; grid import energy is settled from the pool first until it runs out. Credits carry across months. Service Cost is not paid from this pool.
 
 ### Smart mode → inverter
+
+| Position | Effect |
+|----------|--------|
+| **Off** | Plan and history only. No writes to the inverter. |
+| **Smart** | Writes the planned charge or discharge window. |
+| **Smart+** | Same writes as Smart. On a cheap morning charge, extra energy is bought when later hours have a sell price at or above **Super RCE min**, then sold in those hours. The extra charge keeps the battery at or below 95% at the start of the first such hour, and is not added when the battery in that morning window is already above 90%. |
 
 | Planned action | Effect in SolarAssistant |
 |----------------|--------------------------|
@@ -87,7 +94,7 @@ bash install.sh
 
 UI: `http://<pi-ip>:8000/` — **Energy arbitrage** is the plan; **Timer Schedule** mirrors SolarAssistant.
 
-Enable Smart mode in Rules → Timer Schedule, or:
+Choose **Off**, **Smart**, or **Smart+** in Rules → Timer Schedule. **Smart** can also be turned on with:
 
 ```bash
 curl -X POST http://<pi-ip>:8000/api/smart-mode \
