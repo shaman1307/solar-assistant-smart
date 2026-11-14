@@ -54,6 +54,5 @@ assets/
 smart-deploy.tgz
 smart-deploy-stage/
 
-# PME application docs (local / personal copies)
-docs/pme/ems-opis-ru.md
-docs/pme/ems-zgodnosc-pl.md
+# Local EMS description in Russian
+docs/ems-description-ru.md
