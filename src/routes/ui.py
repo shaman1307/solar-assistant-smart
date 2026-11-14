@@ -12,7 +12,11 @@ from ..config import load_config
 from ..g12_pricing import TARIFF_PRESETS
 from ..grid_config import BILLING_MODEL_VERSION
 from ..influxdb import now_warsaw
-from ..simulation_config import simulation_form_defaults
+from ..simulation_config import (
+    plan_timer_charge_power_kw,
+    plan_timer_discharge_power_kw,
+    simulation_form_defaults,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
@@ -64,10 +68,13 @@ def _render_index(request: Request, initial_tab: str = "dashboard") -> HTMLRespo
         initial_tab = "dashboard"
     if initial_tab == "debug" and not _debug_tab_enabled():
         initial_tab = "dashboard"
+    cfg = load_config()
     context = {
         "initial_tab": initial_tab,
         "debug_tab_enabled": _debug_tab_enabled(),
         "today_date": now_warsaw().strftime("%Y-%m-%d"),
+        "timer_charge_power_kw": plan_timer_charge_power_kw(cfg),
+        "timer_discharge_power_kw": plan_timer_discharge_power_kw(cfg),
         "work_mode_options": _work_mode_options_for_template(),
         "battery_discharge_mode_options": _battery_discharge_mode_options_for_template(),
         "solar_power_priority_options": _solar_power_priority_options_for_template(),

@@ -1849,10 +1849,27 @@
     .forecast-overrides-chart #fc-chart-wrap {
       height: 260px;
     }
-    /* Plot paint, including the PV fill, stays under the tooltip. */
+    /* Plot paint stays under the tooltip. Unshaded PV fill is the bottom layer. */
     .forecast-overrides-chart #fc-chart-area {
       z-index: 1;
       isolation: isolate;
+    }
+    .forecast-overrides-chart #fc-pv-unshaded {
+      z-index: 0;
+      pointer-events: none;
+      background-repeat: no-repeat;
+      background-position: 0 0;
+      background-size: 100% 100%;
+    }
+    .forecast-overrides-chart #fc-soc-bands {
+      z-index: 1;
+    }
+    .forecast-overrides-chart #fc-svg-load {
+      z-index: 2;
+    }
+    .forecast-overrides-chart #fc-chart-area .dash-grid-h,
+    .forecast-overrides-chart #fc-chart-area .dash-grid-v {
+      z-index: 3;
     }
     .forecast-overrides-chart #fc-chart-tooltip {
       z-index: 40;
@@ -3308,10 +3325,10 @@
             <div class="absolute left-0 top-0 bottom-6 w-6 flex flex-col justify-between items-end pr-0.5 pointer-events-none dash-chart-y" id="fc-y-axis"></div>
             <div class="absolute right-0 top-0 bottom-6 w-8 flex flex-col justify-between items-start pl-0.5 pointer-events-none" id="fc-y-axis-soc"></div>
             <div class="absolute left-6 right-8 top-0 bottom-6 overflow-hidden" id="fc-chart-area">
+              <div id="fc-pv-unshaded" class="absolute inset-0 pointer-events-none" aria-hidden="true"></div>
               <div class="absolute inset-0" id="fc-soc-bands"></div>
               <svg viewBox="0 0 1000 100" preserveAspectRatio="none"
                    class="absolute inset-0 w-full h-full" id="fc-svg-load">
-                <polygon id="fc-pv-unshaded" fill="#fbbf24" fill-opacity="0.2" stroke="none"/>
                 <polyline id="fc-pv-line"            fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.9"/>
                 <polyline id="fc-pv-line-actual"     fill="none" stroke="#fbbf24" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="6 4" opacity="0.95"/>
                 <polyline id="fc-load-line-forecast" fill="none" stroke="#60a5fa" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.85"/>
@@ -4075,6 +4092,57 @@ function dashAreaPts(data, slotCount, toY) {
   return `${x0},100 ${top} ${x1},100`;
 }
 
+/** Paint the unshaded PV area as a background image sized to the chart box. */
+function paintUnshadedPv(el, data, slotCount, toY) {
+  if (!el) return;
+  el._unshaded = { data, slotCount, toY };
+  const area = el.parentElement;
+  if (!el._fillResize && area && typeof ResizeObserver !== 'undefined') {
+    el._fillResize = new ResizeObserver(() => {
+      const saved = el._unshaded;
+      if (!saved || el._painting) return;
+      paintUnshadedPv(el, saved.data, saved.slotCount, saved.toY);
+    });
+    el._fillResize.observe(area);
+  }
+  const cssW = area ? area.clientWidth : 0;
+  const cssH = area ? area.clientHeight : 0;
+  if (cssW < 2 || cssH < 2) {
+    el.style.backgroundImage = 'none';
+    return;
+  }
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const canvas = el._buf || (el._buf = document.createElement('canvas'));
+  const bw = Math.max(1, Math.round(cssW * dpr));
+  const bh = Math.max(1, Math.round(cssH * dpr));
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const raw = dashAreaPts(data, slotCount, toY);
+  if (!raw) {
+    el.style.backgroundImage = 'none';
+    return;
+  }
+  const pts = raw.split(' ');
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const parts = pts[i].split(',');
+    const px = (Number(parts[0]) / 1000) * cssW;
+    const py = (Number(parts[1]) / 100) * cssH;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(251, 191, 36, 0.2)';
+  ctx.fill();
+  el.style.backgroundImage = `url("${canvas.toDataURL('image/png')}")`;
+}
+
 function formatDashAxisK(val) {
   const n = Number(val) || 0;
   const abs = Math.abs(n);
@@ -4686,7 +4754,11 @@ function renderForecast() {
   const lineActual     = document.getElementById('fc-load-line-actual');
   const socLine        = document.getElementById('fc-soc-line');
   const socLineActual  = document.getElementById('fc-soc-line-actual');
-  if (pvUnshaded)   pvUnshaded.setAttribute('points',     dashAreaPts(pvUnshadedKw, slotCount, fcToY));
+  if (pvUnshaded) {
+    pvUnshaded._painting = true;
+    paintUnshadedPv(pvUnshaded, pvUnshadedKw, slotCount, fcToY);
+    pvUnshaded._painting = false;
+  }
   if (pvLine)       pvLine.setAttribute('points',         dashLinePts(pvForecastKw, slotCount, fcToY));
   if (pvLineActual) pvLineActual.setAttribute('points',   showActual && pvActualKw ? dashLinePts(pvActualKw, slotCount, fcToY) : '');
   if (lineForecast) lineForecast.setAttribute('points',   dashLinePts(loadForecastKw, slotCount, fcToY));
@@ -10228,6 +10300,17 @@ function buildSimTimerScheduleText({ kind, from, to, power_kw, capacity_pct }) {
   return `${prefix} ${fromNorm}-${toNorm} ${power}kW cap${cap}%`;
 }
 
+const SIM_TIMER_POWER_KW = {
+  chg: {{ timer_charge_power_kw }},
+  dis: {{ timer_discharge_power_kw }},
+};
+
+function simTimerMaxPowerKw(kind) {
+  const raw = kind === 'chg' ? SIM_TIMER_POWER_KW.chg : SIM_TIMER_POWER_KW.dis;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function simTimerDefaultFields(hour) {
   const hh = String(hour).padStart(2, '0');
   const nextH = String((hour + 1) % 24).padStart(2, '0');
@@ -10235,7 +10318,7 @@ function simTimerDefaultFields(hour) {
     kind: 'dis',
     from: `${hh}:00`,
     to: `${nextH}:00`,
-    power_kw: 8,
+    power_kw: simTimerMaxPowerKw('dis'),
     capacity_pct: 16,
   };
 }
@@ -10304,8 +10387,9 @@ function validateSimTimerEditForm() {
   if (toMin <= fromMin) {
     return { ok: false, error: 'End time must be after start time.' };
   }
-  if (data.power_kw <= 0 || data.power_kw > 8) {
-    return { ok: false, error: 'Power must be between 0.1 and 8 kW.' };
+  const maxKw = simTimerMaxPowerKw(data.kind);
+  if (data.power_kw <= 0 || data.power_kw > maxKw + 1e-6) {
+    return { ok: false, error: `Power must be between 0.1 and ${maxKw} kW.` };
   }
   if (data.capacity_pct < 0 || data.capacity_pct > 100) {
     return { ok: false, error: 'Cap must be 0–100%.' };
@@ -10334,7 +10418,12 @@ function fillSimTimerEditForm(hour, timerText) {
   if (kindEl) kindEl.value = parsed?.kind || defaults.kind;
   if (fromEl) fromEl.value = parsed?.from || defaults.from;
   if (toEl) toEl.value = parsed?.to || defaults.to;
-  if (powerEl) powerEl.value = parsed?.power_kw ?? defaults.power_kw;
+  if (powerEl) {
+    const kind = parsed?.kind || defaults.kind;
+    powerEl.max = String(simTimerMaxPowerKw(kind));
+    powerEl.value = parsed?.power_kw ?? defaults.power_kw;
+    delete powerEl.dataset.userTouched;
+  }
   if (capEl) {
     capEl.value = parsed?.capacity_pct ?? defaults.capacity_pct;
     delete capEl.dataset.userTouched;
@@ -10442,10 +10531,20 @@ function bindSimTimerCellActions() {
     document.getElementById(id)?.addEventListener('change', updateSimTimerEditPreview);
   });
   document.getElementById('sim-timer-edit-kind')?.addEventListener('change', (ev) => {
+    const kind = ev.target.value === 'chg' ? 'chg' : 'dis';
     const capEl = document.getElementById('sim-timer-edit-cap');
-    if (!capEl || capEl.dataset.userTouched === '1') return;
-    capEl.value = ev.target.value === 'chg' ? 80 : 16;
+    if (capEl && capEl.dataset.userTouched !== '1') {
+      capEl.value = kind === 'chg' ? 80 : 16;
+    }
+    const powerEl = document.getElementById('sim-timer-edit-power');
+    if (powerEl) {
+      powerEl.max = String(simTimerMaxPowerKw(kind));
+      if (powerEl.dataset.userTouched !== '1') powerEl.value = String(simTimerMaxPowerKw(kind));
+    }
     updateSimTimerEditPreview();
+  });
+  document.getElementById('sim-timer-edit-power')?.addEventListener('input', (ev) => {
+    ev.target.dataset.userTouched = '1';
   });
   document.getElementById('sim-timer-edit-cap')?.addEventListener('input', (ev) => {
     ev.target.dataset.userTouched = '1';
@@ -11422,7 +11521,7 @@ setInterval(() => {
         </div>
         <div class="sim-timer-modal-field">
           <label for="sim-timer-edit-power">Power (kW)</label>
-          <input type="number" id="sim-timer-edit-power" min="0.1" max="8" step="0.1">
+          <input type="number" id="sim-timer-edit-power" min="0.1" max="9.2" step="0.1">
         </div>
         <div class="sim-timer-modal-field">
           <label for="sim-timer-edit-cap">Cap (%)</label>
