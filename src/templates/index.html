@@ -2755,8 +2755,9 @@
               for the <b>Scale reference</b> block, what its MPPT really produced in the last 2 hours with what the formula above predicted for it:</p>
             <p class="font-mono bg-white border border-gray-200 rounded px-2 py-1 break-words">
               factor = actual kWh / forecast kWh&nbsp;&nbsp;(last 2 h, limited to 0.25 … 2.0)</p>
-            <p>The rest of today, for all blocks, is multiplied by this factor; e.g. 0.9 means "10% less sun than forecast". Slots where the reference
-              forecast is below 0.2 kW are skipped; with less than 1 hour of usable slots the factor is 1. Tomorrow is not changed.
+            <p>Each day the rest of that day, for all blocks, is multiplied by this factor; e.g. 0.9 means "10% less sun than forecast".
+              The next day gets its own factor from its own production. Slots where the reference
+              forecast is below 0.2 kW are skipped; with less than 1 hour of usable slots the factor is 1.
               Pick as reference the block with the lowest horizon mask along the sun path, so the ratio reflects the weather rather than shade.
               The inverter measures power per MPPT, so every block on the reference block's MPPT is counted. With no reference ticked, no correction is applied.</p>
           </div>
@@ -6535,7 +6536,7 @@ function pvBlockRowHtml(i, block, canRemove) {
             class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500">${mpptOptions}</select>
         </div>
         <label class="flex items-center gap-2 text-xs text-gray-500 cursor-pointer"
-          title="Use this block's MPPT actual/forecast ratio to correct the rest of today's PV forecast">
+          title="Reference block for the PV forecast correction during the day. The rest of the day is multiplied by actual / forecast of this block's MPPT over the last 2 hours. Tick the least shaded block (lowest horizon mask along the sun path): its ratio then shows the weather error.">
           <input data-pv-scale-ref type="checkbox"${block?.scale_reference ? ' checked' : ''} onchange="pvScaleRefToggle(this)"
             class="rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
           Scale reference

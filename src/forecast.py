@@ -361,7 +361,10 @@ def unshaded_pv_q15(
     shaded_effective: list[float] | None = None,
     shaded_base: list[float] | None = None,
 ) -> list[float] | None:
-    """PV q15 with horizon masks ignored, scaled like the shaded series on the chart."""
+    """PV q15 with horizon masks ignored, scaled by the slider only.
+
+    ``shaded_effective`` is the shaded series after the slider and before the intraday scale.
+    """
     if not radiation or not radiation.get("time"):
         return None
     raw = pv_q15_from_radiation(
@@ -652,7 +655,7 @@ def _assemble_forecast(
     base_today["pv_forecast_q15"] = [round(v, 6) for v in today_pv_forecast_q15]
     today_unshaded = unshaded_pv_q15(
         cfg, today_str, (day_t.get("pv") or {}).get("radiation"),
-        shaded_effective=today_pv_forecast_q15,
+        shaded_effective=list((day_t.get("pv") or {}).get("pre_intraday_q15") or today_pv_forecast_q15),
         shaded_base=list((day_t.get("pv") or {}).get("base_q15") or today_pv_forecast_q15),
     )
     if today_unshaded is not None:

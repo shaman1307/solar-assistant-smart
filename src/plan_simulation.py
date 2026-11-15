@@ -783,14 +783,18 @@ def backfill_all_stored_ea_rce(cfg: dict) -> dict[str, Any]:
 
 
 def _attach_unshaded_pv(payload: dict[str, Any], cfg: dict, date_str: str) -> None:
-    """Add mask-free PV q15 for the chart. Does not write the archive."""
+    """Add mask-free PV q15 for the chart. Does not write the archive.
+
+    The series is scaled by the archived slider-only PV (``pv_pre_intraday_q15``); an
+    archive without it gets the unscaled formula.
+    """
     forecast = payload.get("forecast")
     if not isinstance(forecast, dict) or forecast.get("pv_unshaded_q15"):
         return
     radiation = forecast.get("pv_radiation")
     if not radiation:
         return
-    shaded = list(forecast.get("pv_q15") or [])
+    shaded = list(forecast.get("pv_pre_intraday_q15") or [])
     unshaded = forecast_mod.unshaded_pv_q15(
         cfg, date_str, radiation, shaded_effective=shaded or None,
     )

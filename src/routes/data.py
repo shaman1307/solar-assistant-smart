@@ -182,7 +182,7 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
         )
         unshaded = await asyncio.to_thread(
             forecast_mod.unshaded_pv_q15, cfg, date, radiation,
-            shaded_effective=q15, shaded_base=base,
+            shaded_effective=base, shaded_base=base,
         )
         body: dict[str, Any] = {
             "ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2),

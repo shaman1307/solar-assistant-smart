@@ -260,6 +260,7 @@ def day_forecast_snapshot(date_str: str) -> dict[str, Any] | None:
     load = day.get("load") or {}
     return {
         "pv_q15": list(pv.get("effective_q15") or []),
+        "pv_pre_intraday_q15": list(pv.get("pre_intraday_q15") or []),
         "load_q15": list(load.get("effective_q15") or []),
         "pv_radiation": pv.get("radiation"),
     }
@@ -388,6 +389,8 @@ def _apply_intraday_pv_scale(cfg: dict, date_str: str, metric: dict[str, Any]) -
 
     now = now_warsaw()
     slot = (now.hour * 60 + now.minute) // 15
+    # Effective PV after the slider, before the intraday scale (basis of the no-shading series).
+    metric["pre_intraday_q15"] = list(metric.get("effective_q15") or [])
     try:
         q15, scale = intraday_scaled_pv_q15(
             cfg, metric.get("radiation"), date_str, list(metric.get("effective_q15") or []), slot,
