@@ -2729,6 +2729,38 @@
       <!-- Solar -->
       <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4 min-w-0">
         <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Solar Array</legend>
+        <details id="pv-forecast-help" class="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <summary class="text-xs font-medium text-amber-800 cursor-pointer select-none">How the PV forecast is calculated</summary>
+          <div class="mt-2 space-y-2 text-xs text-gray-700 leading-relaxed">
+            <p><b>1. Weather.</b> Open-Meteo gives two numbers for every 15 minutes at <b>Latitude / Longitude</b>:
+              <i>Direct</i> — sunlight coming straight from the sun, and <i>Diffuse</i> — light scattered by the sky and clouds (W/m², on a flat surface).
+              Clouds, haze and dust are already inside these numbers. The forecast is refreshed every hour.</p>
+            <p><b>2. Sun position.</b> From Latitude / Longitude and the time, the app knows where the sun is: its height above the horizon and its direction (azimuth).</p>
+            <p><b>3. One block, one 15-minute slot:</b></p>
+            <p class="font-mono bg-white border border-gray-200 rounded px-2 py-1 break-words">
+              kWh = kWp × Loss factor × 0.25 h / 1000 ×<br>
+              &nbsp;&nbsp;[ Direct × (Angle + Rear) × Visible + Diffuse × (1 + cos Tilt) / 2 ]</p>
+            <ul class="list-disc pl-4 space-y-1">
+              <li><b>kWp</b> — block power. <b>Loss factor</b> — inverter, wiring, dirt, heat (0.93 = 7% lost).</li>
+              <li><b>Angle</b> — how squarely the sun hits the panel: cos(angle between sun and panel) / sin(sun height).
+                Uses <b>Tilt</b> of the block and array <b>Azimuth</b> (180° = south). Zero when the sun is behind the panel.</li>
+              <li><b>Visible</b> — 1 if the sun is above the block's <b>horizon mask</b> at its current direction, 0 if trees or buildings cover it.
+                A hidden sun leaves the block with diffuse light only.</li>
+              <li><b>Rear</b> — <b>Rear gain</b> / sin(sun height), only while the sun direction is between <b>Rear az from</b> and <b>Rear az to</b>
+                and its height is below <b>Rear alt max</b>; otherwise 0.</li>
+              <li><b>(1 + cos Tilt) / 2</b> — the share of the sky a tilted panel sees: 1 when flat, 0.5 when vertical.</li>
+            </ul>
+            <p><b>4. Whole array.</b> All blocks are added together. If you move the PV slider for today or tomorrow, the whole day is scaled to that total.</p>
+            <p><b>5. Correction during the day.</b> The weather forecast is often a bit too sunny or too dark. Every 15 minutes the app compares,
+              for the <b>Scale reference</b> block, what its MPPT really produced in the last 2 hours with what the formula above predicted for it:</p>
+            <p class="font-mono bg-white border border-gray-200 rounded px-2 py-1 break-words">
+              factor = actual kWh / forecast kWh&nbsp;&nbsp;(last 2 h, limited to 0.25 … 2.0)</p>
+            <p>The rest of today, for all blocks, is multiplied by this factor; e.g. 0.9 means "10% less sun than forecast". Slots where the reference
+              forecast is below 0.2 kW are skipped; with less than 1 hour of usable slots the factor is 1. Tomorrow is not changed.
+              Pick as reference the block with the lowest horizon mask along the sun path, so the ratio reflects the weather rather than shade.
+              The inverter measures power per MPPT, so every block on the reference block's MPPT is counted. With no reference ticked, no correction is applied.</p>
+          </div>
+        </details>
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="text-xs text-gray-500 block mb-1">Azimuth (°)</label>
@@ -6224,6 +6256,7 @@ function getPvBlocksFromDom() {
     power_kwp: parseFloat(row.querySelector('[data-pv-kwp]')?.value) || 0,
     tilt: parseFloat(row.querySelector('[data-pv-tilt]')?.value) || 0,
     mppt: parseInt(row.querySelector('[data-pv-mppt]')?.value, 10) || null,
+    scale_reference: !!row.querySelector('[data-pv-scale-ref]')?.checked,
     rear_gain: pvOptionalNumber(row.querySelector('[data-pv-rear-gain]')?.value),
     rear_az_from: pvOptionalNumber(row.querySelector('[data-pv-rear-from]')?.value),
     rear_az_to: pvOptionalNumber(row.querySelector('[data-pv-rear-to]')?.value),
@@ -6231,6 +6264,13 @@ function getPvBlocksFromDom() {
     horizon_mask: pvMaskValuesFromRow(row),
     photo: row.dataset.pvPhoto || null,
   }));
+}
+
+function pvScaleRefToggle(input) {
+  if (!input.checked) return;
+  document.querySelectorAll('#pv-blocks [data-pv-scale-ref]').forEach(el => {
+    if (el !== input) el.checked = false;
+  });
 }
 
 function pvOptionalNumber(v) {
@@ -6494,6 +6534,12 @@ function pvBlockRowHtml(i, block, canRemove) {
           <select data-pv-mppt
             class="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm text-gray-900 focus:outline-none focus:border-amber-500">${mpptOptions}</select>
         </div>
+        <label class="flex items-center gap-2 text-xs text-gray-500 cursor-pointer"
+          title="Use this block's MPPT actual/forecast ratio to correct the rest of today's PV forecast">
+          <input data-pv-scale-ref type="checkbox"${block?.scale_reference ? ' checked' : ''} onchange="pvScaleRefToggle(this)"
+            class="rounded border-gray-300 text-amber-500 focus:ring-amber-500" />
+          Scale reference
+        </label>
         <details class="pv-rear-details">
         <summary class="text-xs text-gray-500 cursor-pointer select-none">Rear side</summary>
         <div class="grid grid-cols-1 gap-2 mt-2">

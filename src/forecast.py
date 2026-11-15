@@ -38,7 +38,7 @@ _archive_cache: dict[tuple, dict[str, Any]] = {}
 ARCHIVE_CACHE_TTL_S = 86400
 
 # Intraday PV scale: actual/forecast of the reference MPPT over the last completed slots.
-PV_SCALE_MPPT = 1
+# The reference MPPT is the MPPT of the block flagged ``scale_reference`` in the config.
 PV_SCALE_WINDOW_SLOTS = 8
 PV_SCALE_MIN_SLOTS = 4
 PV_SCALE_MIN_REF_KW = 0.2
@@ -332,13 +332,21 @@ def intraday_scaled_pv_q15(
     q15: list[float],
     until_slot: int,
 ) -> tuple[list[float], float]:
-    """PV q15 scaled by the reference MPPT actual/forecast; also the scale at ``until_slot``."""
-    blocks = [b for b in cfg["solar"].get("blocks") or [] if b.get("mppt") == PV_SCALE_MPPT]
+    """PV q15 scaled by the reference MPPT actual/forecast; also the scale at ``until_slot``.
+
+    The reference forecast covers every block on the reference MPPT, since the
+    inverter measures power per MPPT. Without a flagged block the scale is 1.
+    """
+    all_blocks = cfg["solar"].get("blocks") or []
+    ref_mppt = next(
+        (b.get("mppt") for b in all_blocks if b.get("scale_reference") and b.get("mppt")), None,
+    )
+    blocks = [b for b in all_blocks if ref_mppt is not None and b.get("mppt") == ref_mppt]
     if not radiation or not radiation.get("time") or not blocks:
         return list(q15), 1.0
     ref_cfg = {**cfg, "solar": {**cfg["solar"], "blocks": blocks}}
     ref_kw = [v * 4 for v in pv_q15_from_radiation(ref_cfg, radiation, date_str)]
-    actual_kw = fc.ten_min_kw_to_q15_kw(pvh.mppt_actual_kw(PV_SCALE_MPPT, date_str))
+    actual_kw = fc.ten_min_kw_to_q15_kw(pvh.mppt_actual_kw(ref_mppt, date_str))
     factors = pv_scale_factors(ref_kw, actual_kw, until_slot)
     scaled = [round(float(v) * k, 6) for v, k in zip(q15, factors)]
     current = factors[min(until_slot, fc.Q15_PER_DAY - 1)]
