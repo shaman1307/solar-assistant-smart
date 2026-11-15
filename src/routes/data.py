@@ -167,7 +167,8 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
     """Rebuild today/tomorrow PV from the last cached Open-Meteo radiation.
 
     For a past ``date``, return PV q15 from that day's stored radiation and the
-    current config without writing the archive or the day cache.
+    current config, each slot scaled by the intraday MPPT scale known before it,
+    without writing the archive or the day cache.
     """
     if date and date < now_warsaw().strftime("%Y-%m-%d"):
         archived = (load_plan_day_archive(date) or {}).get("forecast") or {}
@@ -175,9 +176,13 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
         if not radiation:
             return {"ok": False, "date": date, "error": "no stored radiation for this day"}
         cfg = load_config()
-        q15 = await asyncio.to_thread(forecast_mod.pv_q15_from_radiation, cfg, radiation, date)
+        base = await asyncio.to_thread(forecast_mod.pv_q15_from_radiation, cfg, radiation, date)
+        q15, _scale = await asyncio.to_thread(
+            forecast_mod.intraday_scaled_pv_q15, cfg, radiation, date, base, fc.Q15_PER_DAY,
+        )
         unshaded = await asyncio.to_thread(
-            forecast_mod.unshaded_pv_q15, cfg, date, radiation, shaded_base=q15,
+            forecast_mod.unshaded_pv_q15, cfg, date, radiation,
+            shaded_effective=q15, shaded_base=base,
         )
         body: dict[str, Any] = {
             "ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2),

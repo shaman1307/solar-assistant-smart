@@ -382,6 +382,25 @@ def apply_overrides_to_cache(cfg: dict) -> dict[str, Any]:
     return refresh_effective_metrics(cfg, [today_str, tomorrow_str])
 
 
+def _apply_intraday_pv_scale(cfg: dict, date_str: str, metric: dict[str, Any]) -> None:
+    """Scale today's effective PV by the reference MPPT actual/forecast of the last slots."""
+    from .forecast import intraday_scaled_pv_q15
+
+    now = now_warsaw()
+    slot = (now.hour * 60 + now.minute) // 15
+    try:
+        q15, scale = intraday_scaled_pv_q15(
+            cfg, metric.get("radiation"), date_str, list(metric.get("effective_q15") or []), slot,
+        )
+    except Exception as exc:
+        log.warning("Intraday PV scale skipped for %s: %s", date_str, exc)
+        return
+    metric["effective_q15"] = q15
+    metric["effective_hourly"] = q15_to_hourly(q15)
+    metric["total_effective"] = round(sum(metric["effective_hourly"]), 2)
+    metric["intraday_scale"] = scale
+
+
 def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -417,6 +436,8 @@ def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
         pval = overrides.get(pv_keys.get(date_str, ""))
         ptarget = float(pval) if pval is not None else None
         _scale_metric(pv_metric, ptarget)
+        if date_str == today_str:
+            _apply_intraday_pv_scale(cfg, date_str, pv_metric)
 
     cache["computed_at"] = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
     save_day_cache(cache)

@@ -86,15 +86,20 @@ def _percentile(values: list[float], q: float) -> float:
     return s[min(len(s) - 1, int(q * (len(s) - 1) + 0.5))]
 
 
+def mppt_actual_kw(mppt: int, date_str: str) -> list[float | None]:
+    """Mean string power (kW) of one MPPT per 10-min chart slot of a Warsaw day."""
+    from .influxdb import _influx_chart_mean_kw, _warsaw_day_bounds_utc
+
+    start_utc, end_utc = _warsaw_day_bounds_utc(date_str)
+    since = f"'{start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
+    until = f"'{end_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
+    return _influx_chart_mean_kw(f"PV power {mppt}", since, until, date_str, field=MPPT_FIELD)
+
+
 def _mppt_samples(cfg: dict, mppt: int, date_str: str) -> list[dict[str, Any]]:
     """Beam visibility samples of one MPPT for one clear Warsaw day."""
     from .forecast import _block_interval_kwh, _solar_position
-    from .influxdb import (
-        CHART_SLOT_MIN,
-        WARSAW,
-        _influx_chart_mean_kw,
-        _warsaw_day_bounds_utc,
-    )
+    from .influxdb import CHART_SLOT_MIN, WARSAW
 
     solar = cfg["solar"]
     blocks = [b for b in solar["blocks"] if b.get("mppt") == mppt]
@@ -102,10 +107,7 @@ def _mppt_samples(cfg: dict, mppt: int, date_str: str) -> list[dict[str, Any]]:
         return []
     lat = cfg["location"]["latitude"]
     lon = cfg["location"]["longitude"]
-    start_utc, end_utc = _warsaw_day_bounds_utc(date_str)
-    since = f"'{start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
-    until = f"'{end_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
-    actual = _influx_chart_mean_kw(f"PV power {mppt}", since, until, date_str, field=MPPT_FIELD)
+    actual = mppt_actual_kw(mppt, date_str)
     day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=WARSAW)
 
     raw: list[dict[str, Any]] = []

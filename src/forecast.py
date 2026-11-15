@@ -37,6 +37,14 @@ OM_RETRY_DELAY_S = 2
 _archive_cache: dict[tuple, dict[str, Any]] = {}
 ARCHIVE_CACHE_TTL_S = 86400
 
+# Intraday PV scale: actual/forecast of the reference MPPT over the last completed slots.
+PV_SCALE_MPPT = 1
+PV_SCALE_WINDOW_SLOTS = 8
+PV_SCALE_MIN_SLOTS = 4
+PV_SCALE_MIN_REF_KW = 0.2
+PV_SCALE_MIN = 0.25
+PV_SCALE_MAX = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -287,6 +295,56 @@ def pv_q15_from_radiation(
     return [round(float(v), 6) for v in q15[:fc.Q15_PER_DAY]]
 
 
+def pv_scale_factors(
+    ref_forecast_kw: list[float],
+    ref_actual_kw: list[float | None],
+    until_slot: int,
+) -> list[float]:
+    """Scale per q15 slot from the reference MPPT actual/forecast in the window before it.
+
+    Slot i uses the window ending at min(i, until_slot): elapsed slots get the scale
+    known just before them, later slots get the scale known at ``until_slot``.
+    """
+    out: list[float] = []
+    for i in range(fc.Q15_PER_DAY):
+        end = min(i, until_slot)
+        act = ref = 0.0
+        n = 0
+        for j in range(max(0, end - PV_SCALE_WINDOW_SLOTS), end):
+            a = ref_actual_kw[j] if j < len(ref_actual_kw) else None
+            f = ref_forecast_kw[j] if j < len(ref_forecast_kw) else 0.0
+            if a is None or f < PV_SCALE_MIN_REF_KW:
+                continue
+            act += float(a)
+            ref += float(f)
+            n += 1
+        if n < PV_SCALE_MIN_SLOTS or ref <= 0:
+            out.append(1.0)
+        else:
+            out.append(round(min(PV_SCALE_MAX, max(PV_SCALE_MIN, act / ref)), 4))
+    return out
+
+
+def intraday_scaled_pv_q15(
+    cfg: dict,
+    radiation: dict[str, list] | None,
+    date_str: str,
+    q15: list[float],
+    until_slot: int,
+) -> tuple[list[float], float]:
+    """PV q15 scaled by the reference MPPT actual/forecast; also the scale at ``until_slot``."""
+    blocks = [b for b in cfg["solar"].get("blocks") or [] if b.get("mppt") == PV_SCALE_MPPT]
+    if not radiation or not radiation.get("time") or not blocks:
+        return list(q15), 1.0
+    ref_cfg = {**cfg, "solar": {**cfg["solar"], "blocks": blocks}}
+    ref_kw = [v * 4 for v in pv_q15_from_radiation(ref_cfg, radiation, date_str)]
+    actual_kw = fc.ten_min_kw_to_q15_kw(pvh.mppt_actual_kw(PV_SCALE_MPPT, date_str))
+    factors = pv_scale_factors(ref_kw, actual_kw, until_slot)
+    scaled = [round(float(v) * k, 6) for v, k in zip(q15, factors)]
+    current = factors[min(until_slot, fc.Q15_PER_DAY - 1)]
+    return scaled, current
+
+
 def unshaded_pv_q15(
     cfg: dict,
     date_str: str,
@@ -399,8 +457,9 @@ def _fill_pv_intervals(
 ) -> list[float]:
     """PV kWh per Warsaw-day slot from Open-Meteo radiation.
 
-    The timestamp is the start of the averaging interval and the clock hour
-    of that energy. The sun is taken at that timestamp.
+    Open-Meteo labels each radiation value with the end of its averaging
+    interval; the value fills the slot that starts ``interval_min`` earlier,
+    with the sun taken at the interval midpoint.
     """
     n_slots = 24 * 60 // interval_min
     out = [0.0] * n_slots
@@ -410,17 +469,21 @@ def _fill_pv_intervals(
     azimuth = solar["azimuth"]
     loss = solar["system_loss_factor"]
     blocks = solar["blocks"]
+    interval = timedelta(minutes=interval_min)
 
     for t, d, df in zip(times, direct, diffuse):
-        start_local = datetime.strptime(t[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=WARSAW)
+        end_utc = (
+            datetime.strptime(t[:16], "%Y-%m-%dT%H:%M")
+            .replace(tzinfo=WARSAW)
+            .astimezone(timezone.utc)
+        )
+        start_local = (end_utc - interval).astimezone(WARSAW)
         if start_local.strftime("%Y-%m-%d") != date_str:
             continue
         slot = (start_local.hour * 60 + start_local.minute) // interval_min
         if not (0 <= slot < n_slots):
             continue
-        sun_alt, sun_az = _solar_position(
-            lat, lon, start_local.astimezone(timezone.utc),
-        )
+        sun_alt, sun_az = _solar_position(lat, lon, end_utc - interval / 2)
         kwh = 0.0
         for block in blocks:
             kwh += _block_interval_kwh(
@@ -443,14 +506,14 @@ def _fill_pv_intervals(
 
 
 def _solar_position(lat_deg: float, lon_deg: float, when_utc: datetime) -> tuple[float, float]:
-    """Sun altitude and compass azimuth (radians) at an aware UTC instant.
-
-    Hour angle is 15° per Warsaw clock hour from noon.
-    """
-    del lon_deg
-    local = when_utc.astimezone(WARSAW)
-    day_of_year = local.timetuple().tm_yday
-    hour = local.hour + local.minute / 60.0 + local.second / 3600.0
+    """Sun altitude and compass azimuth (radians) at an aware UTC instant."""
+    day_of_year = when_utc.timetuple().tm_yday
+    b = math.radians(360 / 365 * (day_of_year - 81))
+    eot_min = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+    hour = (
+        when_utc.hour + when_utc.minute / 60.0 + when_utc.second / 3600.0
+        + lon_deg / 15.0 + eot_min / 60.0
+    )
     declination = math.radians(23.45 * math.sin(math.radians(360 / 365 * (day_of_year + 284))))
     hour_angle = math.radians(15 * (hour - 12))
     lat_rad = math.radians(lat_deg)
