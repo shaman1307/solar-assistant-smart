@@ -653,7 +653,7 @@ def _assemble_forecast(
     base_today["load_q15"] = [round(v, 6) for v in today_load_q15]
     base_today["pv_forecast"] = [round(v, 3) for v in today_pv_cached]
     base_today["pv_forecast_q15"] = [round(v, 6) for v in today_pv_forecast_q15]
-    today_unshaded = list((day_t.get("pv") or {}).get("unshaded_q15") or []) or unshaded_pv_q15(
+    today_unshaded = unshaded_pv_q15(
         cfg, today_str, (day_t.get("pv") or {}).get("radiation"),
         shaded_effective=list((day_t.get("pv") or {}).get("pre_intraday_q15") or today_pv_forecast_q15),
         shaded_base=list((day_t.get("pv") or {}).get("base_q15") or today_pv_forecast_q15),

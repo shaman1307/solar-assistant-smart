@@ -261,7 +261,6 @@ def day_forecast_snapshot(date_str: str) -> dict[str, Any] | None:
     return {
         "pv_q15": list(pv.get("effective_q15") or []),
         "pv_pre_intraday_q15": list(pv.get("pre_intraday_q15") or []),
-        "pv_unshaded_q15": list(pv.get("unshaded_q15") or []),
         "load_q15": list(load.get("effective_q15") or []),
         "pv_radiation": pv.get("radiation"),
     }
@@ -336,7 +335,6 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
     d2 = (now + timedelta(days=2)).strftime("%Y-%m-%d")
 
     today_str = now.strftime("%Y-%m-%d")
-    old_today_pv = ((load_day_cache().get("days") or {}).get(today_str) or {}).get("pv") or {}
     cache: dict[str, Any] = {
         "computed_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "anchor_date": today_str,
@@ -345,9 +343,6 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
     for date_str in (today_str, d1, d2):
         pv_h, pv_q, pv_rad = compute_pv_profiles_for_date(date_str, cfg)
         cache["days"][date_str] = build_day_forecast(date_str, cfg, pv_h, pv_q, pv_rad)
-    for key in UNSHADED_FROZEN_KEYS:
-        if old_today_pv.get(key) is not None:
-            cache["days"][today_str]["pv"][key] = old_today_pv[key]
 
     save_day_cache(cache)
 
@@ -386,33 +381,6 @@ def apply_overrides_to_cache(cfg: dict) -> dict[str, Any]:
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
     return refresh_effective_metrics(cfg, [today_str, tomorrow_str])
-
-
-UNSHADED_FROZEN_KEYS = ("unshaded_radiation", "unshaded_q15")
-
-
-def _freeze_unshaded_pv(
-    cfg: dict, date_str: str, metric: dict[str, Any], slider_kwh: float | None,
-) -> None:
-    """Build today's no-shading PV from the radiation of the first refresh of the day.
-
-    The current solar config and the slider apply; later Open-Meteo runs do not.
-    """
-    from .forecast import pv_q15_from_radiation, unshaded_pv_q15
-
-    if metric.get("unshaded_radiation") is None:
-        if not metric.get("radiation"):
-            return
-        metric["unshaded_radiation"] = metric["radiation"]
-        log.info("PV no-shading radiation frozen for %s", date_str)
-    radiation = metric["unshaded_radiation"]
-    base = pv_q15_from_radiation(cfg, radiation, date_str)
-    raw = unshaded_pv_q15(cfg, date_str, radiation, shaded_effective=base, shaded_base=base)
-    if raw is None:
-        return
-    base_total = round(sum(q15_to_hourly(base)), 2)
-    scale = slider_kwh / base_total if slider_kwh is not None and base_total > 1e-9 else 1.0
-    metric["unshaded_q15"] = [round(float(v) * scale, 6) for v in raw]
 
 
 def _apply_intraday_pv_scale(cfg: dict, date_str: str, metric: dict[str, Any]) -> None:
@@ -472,7 +440,6 @@ def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
         ptarget = float(pval) if pval is not None else None
         _scale_metric(pv_metric, ptarget)
         if date_str == today_str:
-            _freeze_unshaded_pv(cfg, date_str, pv_metric, ptarget)
             _apply_intraday_pv_scale(cfg, date_str, pv_metric)
 
     cache["computed_at"] = now_warsaw().strftime("%Y-%m-%d %H:%M:%S")
