@@ -191,7 +191,7 @@ def _end_registers(rows: list[dict], live: list[dict], hour: int) -> list:
     cfg = {**_cfg(), "smart_mode_enabled": True, "sa": {"settings": {}}}
     with (
         patch.object(hbs, "load_config", return_value=cfg),
-        patch.object(hbs, "_plan_rows", AsyncMock(return_value=rows)),
+        patch.object(hbs, "_ea_rows", AsyncMock(return_value=rows)),
         patch.object(hbs, "now_warsaw", return_value=now),
         patch.object(hbs.sa_client, "get_rules", AsyncMock(return_value=rules)),
         patch.object(hbs.sa_client, "get_live_metrics", AsyncMock(return_value={"battery_soc": 40.0})),

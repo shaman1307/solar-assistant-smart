@@ -62,14 +62,27 @@ def _smart_mode_enabled(cfg: dict) -> bool:
     return bool(cfg.get("smart_mode_enabled", False))
 
 
-async def _plan_rows(cfg: dict) -> list[dict]:
-    """Return plan rows from SQLite (sole source of truth)."""
+async def _ea_rows(cfg: dict) -> list[dict]:
+    """Energy arbitrage rows from SQLite as the EA table lists them.
+
+    Today's past hours (history) come first, then the plan from the current hour.
+    History lets a window that opened earlier today be seen as the same run.
+    """
     del cfg
     stored = read_plan()
     if not stored or not stored.get("rows"):
         log.warning("No plan in SQLite — SA timer sync skipped")
         return []
-    return stored["rows"]
+    plan = list(stored["rows"])
+    today = str(stored.get("today_date") or "")
+    planned = {(str(r.get("plan_date") or ""), r.get("hour")) for r in plan}
+    history = [
+        r for r in stored.get("history_rows") or []
+        if r.get("start") != "TOTAL"
+        and str(r.get("plan_date") or "") == today
+        and (today, r.get("hour")) not in planned
+    ]
+    return history + plan
 
 
 def _sa_missing_active_plan_timer(
@@ -207,15 +220,7 @@ async def _sync_timer_from_hour_row(
 
     # Write the plan timer as-is — never shift start times.
     rules = await sa_client.get_rules(cfg)
-    metrics = await sa_client.get_live_metrics(cfg)
-    live_soc = metrics.get("battery_soc")
-    try:
-        live_soc_pct = float(live_soc) if live_soc is not None else None
-    except (TypeError, ValueError):
-        live_soc_pct = None
-    schedule = build_sa_schedule_from_hour_row(
-        rows, hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
-    )
+    schedule = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
     if not schedule:
         status["skipped"] = True
         status["skip_reason"] = "unparsed_timer_schedule"
@@ -298,7 +303,7 @@ async def run_hour_boundary_start(now=None) -> dict[str, Any]:
             _last_hour_boundary_sync = status
             return status
 
-        rows = await _plan_rows(cfg)
+        rows = await _ea_rows(cfg)
         if hour_has_timer_schedule(rows, hour):
             row = next(r for r in rows if r.get("hour") == hour and r.get("start") != "TOTAL")
             status["timer_schedule"] = str(row.get("timer_schedule") or "").strip()
@@ -402,7 +407,7 @@ async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
             _last_hour_boundary_sync = status
             return status
 
-        rows = await _plan_rows(cfg)
+        rows = await _ea_rows(cfg)
         due, due_end, timer_txt = await _peek_limit_home_due(
             cfg, rows, now=now, hour=now.hour,
         )
@@ -416,15 +421,7 @@ async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
         )
         if charge_active or discharge_active:
             rules = await sa_client.get_rules(cfg)
-            metrics = await sa_client.get_live_metrics(cfg)
-            live_soc = metrics.get("battery_soc")
-            try:
-                live_soc_pct = float(live_soc) if live_soc is not None else None
-            except (TypeError, ValueError):
-                live_soc_pct = None
-            schedule = build_sa_schedule_from_hour_row(
-                rows, now.hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
-            )
+            schedule = build_sa_schedule_from_hour_row(rows, now.hour, cfg, existing=rules)
             needs_write = _quarter_retry_needs_write(schedule, rules)
             if needs_write or (
                 schedule is None and _sa_missing_active_plan_timer(timer_txt, now, rules)

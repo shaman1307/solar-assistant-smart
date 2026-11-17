@@ -71,20 +71,20 @@ def _clear_plan(tmp_path):
     sqlite_store._conn = None
 
 
-def test_plan_rows_reads_from_sqlite():
-    """_plan_rows returns rows from SQLite without calling build_plan_simulation."""
+def test_ea_rows_reads_from_sqlite():
+    """_ea_rows returns rows from SQLite without calling build_plan_simulation."""
     plan = _plan_with_timer(8, "Dis 08:00-08:45 8.0kW cap16%")
     write_plan(plan)
 
-    rows = asyncio.run(hbs._plan_rows(_cfg()))
+    rows = asyncio.run(hbs._ea_rows(_cfg()))
 
     assert len(rows) == 1
     assert rows[0]["timer_schedule"] == "Dis 08:00-08:45 8.0kW cap16%"
 
 
-def test_plan_rows_returns_empty_when_sqlite_has_no_plan():
-    """When SQLite is empty, _plan_rows returns [] — no fallback to simulation."""
-    rows = asyncio.run(hbs._plan_rows(_cfg()))
+def test_ea_rows_returns_empty_when_sqlite_has_no_plan():
+    """When SQLite is empty, _ea_rows returns [] — no fallback to simulation."""
+    rows = asyncio.run(hbs._ea_rows(_cfg()))
     assert rows == []
 
 
