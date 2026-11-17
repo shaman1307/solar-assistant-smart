@@ -90,7 +90,8 @@ def _live_cfg(*, smart_plus: bool) -> dict:
 
 
 def test_nov12_counts_morning_only_when_evening_is_not_richer():
-    """H12 (2.35) loses to H16 (2.82). H07–H11 stay: the evening is cheaper."""
+    """H12 (2.35) loses to H16 (2.82). H07–H11 stay: the evening is cheaper.
+    H13–H14 are daytime off-peak, not sale hours."""
     cfg = _live_cfg(smart_plus=True)
     rce = _quarters(NOV12_RCE) + [None] * 96
     counted = supercharge_counted_hours(
@@ -103,7 +104,7 @@ def test_nov12_counts_morning_only_when_evening_is_not_richer():
         cfg=cfg,
         today_date=datetime(2026, 11, 12),
     )
-    assert counted == [7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18]
+    assert counted == [7, 8, 9, 10, 11, 15, 16, 17, 18]
 
 
 def test_supercharge_grid_ac_includes_charge_eta():
@@ -255,3 +256,105 @@ def test_nov12_timer_actions_through_22():
         for slot in (today["q15_by_hour"].get(hour) or [])
     )
     assert peak_import < 0.5
+    # Morning super hours: SOC at 13:00 lands on the floor, not above it.
+    soc_13 = _end_soc_pct(today["q15_by_hour"].get(12) or [])
+    assert soc_13 is not None and 16.0 - 0.5 <= soc_13 <= 16.0 + 5.0
+
+
+# PSE RCE PLN/kWh brutto and forecast PV/load (kWh per hour), 2026-11-17 00:00.
+NOV17_RCE = [
+    1.0225, 1.032, 1.017, 1.0128, 0.9932, 0.8425, 1.0888, 1.4679,
+    1.5363, 1.49, 1.3953, 1.3548, 1.4168, 1.8405, 2.4009, 2.4337,
+    2.0575, 1.685, 1.5703, 1.4848, 1.3018, 1.0431, 0.9575, 0.8132,
+]
+NOV17_PV = [
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.23, 2.321, 3.395, 3.132,
+    2.205, 1.76, 1.236, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+]
+NOV17_LOAD = [
+    0.929, 0.805, 0.653, 0.619, 0.569, 0.543, 0.67, 0.656, 0.59, 0.643,
+    0.755, 0.962, 0.801, 0.641, 1.099, 0.714, 0.652, 0.599, 0.609, 0.884,
+    1.196, 1.207, 1.12, 1.096,
+]
+NOV18_PV = [
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.164, 0.199, 0.246, 0.204,
+    0.307, 0.459, 0.299, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+]
+NOV18_LOAD = [
+    0.76, 0.916, 0.688, 0.544, 0.552, 0.624, 0.622, 0.582, 0.678, 0.71,
+    0.67, 0.962, 0.854, 0.571, 0.64, 0.739, 0.695, 0.64, 0.548, 0.756,
+    1.056, 1.006, 0.829, 1.006,
+]
+
+
+def _nov17_plan(rce_hourly: list[float]) -> dict:
+    plan = run_rolling_smart_q15_plan(
+        date_str="2026-11-17",
+        pv_hourly=NOV17_PV,
+        load_hourly=NOV17_LOAD,
+        tomorrow_pv=NOV18_PV,
+        tomorrow_load=NOV18_LOAD,
+        cfg=_live_cfg(smart_plus=True),
+        rce_quarters=_quarters(rce_hourly),
+        rce_quarters_tomorrow=[None] * 96,
+        initial_soc_kwh=0.20 * 47.6,
+        from_hour=0,
+        horizon_hours=36,
+        front_load_skip_leading_slots=0,
+    )
+    assert plan is not None
+    return plan["today"]["q15_by_hour"]
+
+
+def test_nov17_evening_super_hours_charge_only_to_the_survive_reserve():
+    """H15–H16 are super hours; H14 is daytime off-peak. SOC at 22:00 lands on
+    the survive reserve (house until 13:00 next day + min SOC, 38.9%)."""
+    cfg = _live_cfg(smart_plus=True)
+    rce = _quarters(NOV17_RCE)
+    counted = supercharge_counted_hours(
+        end_hour=6,
+        rce_series=rce + [None] * 96,
+        slots_per_hour=4,
+        horizon_hours=list(range(36)),
+        min_price=2.0,
+        export_window_start_hour=16,
+        cfg=cfg,
+        today_date=datetime(2026, 11, 17),
+    )
+    assert counted == [15, 16]
+    by_hour = _nov17_plan(NOV17_RCE)
+    soc_06 = _end_soc_pct(by_hour.get(5) or [])
+    soc_15 = _end_soc_pct(by_hour.get(14) or [])
+    soc_22 = _end_soc_pct(by_hour.get(21) or [])
+    print(f"SOC 06:00 {soc_06:.1f}%  15:00 {soc_15:.1f}%  22:00 {soc_22:.1f}%")
+    assert soc_06 < 70.0
+    assert soc_15 <= 85.0
+    assert 38.0 <= soc_22 <= 41.0
+    sold = sum(
+        float(slot.get("grid_export") or 0.0)
+        for hour in (15, 16)
+        for slot in (by_hour.get(hour) or [])
+    )
+    assert sold > 12.5
+
+
+def test_nov17_long_super_window_sells_below_survive_reserve():
+    """H15–H18 at 2.5 PLN: 95% at 15:00 cannot cover four full hours plus the
+    survive reserve. The sale runs below it, but not below min SOC plus the
+    house until 22:00."""
+    rce = list(NOV17_RCE)
+    for hour in (15, 16, 17, 18):
+        rce[hour] = 2.5
+    by_hour = _nov17_plan(rce)
+    soc_15 = _end_soc_pct(by_hour.get(14) or [])
+    soc_19 = _end_soc_pct(by_hour.get(18) or [])
+    soc_22 = _end_soc_pct(by_hour.get(21) or [])
+    sold = {
+        hour: sum(float(s.get("grid_export") or 0.0) for s in (by_hour.get(hour) or []))
+        for hour in (15, 16, 17, 18)
+    }
+    print(f"SOC 15:00 {soc_15:.1f}%  19:00 {soc_19:.1f}%  22:00 {soc_22:.1f}%  sold {sold}")
+    assert soc_15 <= 95.5
+    assert all(kwh > 6.5 for kwh in sold.values())
+    assert soc_22 < 38.0
+    assert soc_22 >= 16.0 - 0.5

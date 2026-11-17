@@ -61,6 +61,54 @@ __all__ = [
 ]
 
 
+def _supercharge_relieved_reserves(
+    reserves: list[float],
+    controls: list[HourControl],
+    *,
+    pv_q: list[float],
+    load_q: list[float],
+    buy_q: list[float],
+    rce_q: list[float | None],
+    start_step: int,
+    initial_soc_kwh: float,
+    cfg: dict[str, Any],
+    today_date,
+    front_load_skip_leading_slots: int | None,
+) -> list[float]:
+    """Replay reserves with the Smart+ sale-hour relief the optimizer planned with."""
+    from .grid_config import export_window_start_hour
+    from .plan_charge import relieve_supercharge_reserves
+    from .plan_optimizer import g12_tariff_from_cfg
+
+    params = get_simulation_params(cfg)
+    return relieve_supercharge_reserves(
+        controls,
+        pv_series=pv_q,
+        load_series=load_q,
+        buy_prices=buy_q,
+        offpeak_buy=g12_tariff_from_cfg(cfg).offpeak_full,
+        initial_soc_kwh=initial_soc_kwh,
+        battery_cap=float(cfg["battery"]["capacity_kwh"]),
+        min_kwh=plan_min_soc_kwh(cfg),
+        discharge_dc_step=plan_timer_discharge_power_kw(cfg) * STEP_SCALE,
+        inverter_ac_step=float(cfg["inverter"]["ac_capacity_kw"]) * STEP_SCALE,
+        eta_grid=float(params["eta_grid_battery"]),
+        eta_out=float(params["eta_battery_out"]),
+        eta_pv_load=float(params["eta_pv_load"]),
+        eta_pv_grid=float(params["eta_pv_grid"]),
+        eta_pv_battery=float(params["eta_pv_battery"]),
+        eps_step=eps_step_kwh(float(params["epsilon_kwh"]), STEP_SCALE),
+        reserves=reserves,
+        step_scale=STEP_SCALE,
+        rce_series=rce_q,
+        rce_step_offset=start_step,
+        export_window_start_hour=export_window_start_hour(cfg),
+        cfg=cfg,
+        today_date=today_date,
+        skip_leading_slots=front_load_skip_leading_slots,
+    )
+
+
 def hourly_rows_from_pv_load(
     pv_hourly: list[float],
     load_hourly: list[float],
@@ -453,6 +501,13 @@ def run_day_smart_q15_plan(
         buy_series=buy_r,
         offpeak_buy=g12_tariff_from_cfg(cfg).offpeak_full,
     )
+    reserves = _supercharge_relieved_reserves(
+        reserves, controls,
+        pv_q=pv_q, load_q=load_q, buy_q=buy_q, rce_q=rce_q,
+        start_step=start_step, initial_soc_kwh=initial_soc_kwh,
+        cfg=cfg, today_date=today_date,
+        front_load_skip_leading_slots=front_load_skip_leading_slots,
+    )
 
     q15_by_hour, q15_plan_rows, soc = simulate_q15_controls(
         controls,
@@ -673,6 +728,13 @@ def run_rolling_smart_q15_plan(
         slots_per_hour=Q15_PER_HOUR,
         buy_series=buy_r,
         offpeak_buy=g12_tariff_from_cfg(cfg).offpeak_full,
+    )
+    reserves = _supercharge_relieved_reserves(
+        reserves, controls,
+        pv_q=pv_q, load_q=load_q, buy_q=buy_q, rce_q=rce_q,
+        start_step=start_step, initial_soc_kwh=initial_soc_kwh,
+        cfg=cfg, today_date=today_date,
+        front_load_skip_leading_slots=front_load_skip_leading_slots,
     )
 
     q15_today: dict[int, list[dict[str, Any]]] = {h: [] for h in range(24)}

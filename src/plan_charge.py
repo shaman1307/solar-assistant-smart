@@ -411,13 +411,14 @@ def supercharge_counted_hours(
     cfg: dict[str, Any] | None,
     today_date,
 ) -> list[int]:
-    """Hours in the 24h after *end_hour* whose mean RCE is at least *min_price*.
+    """Sale hours in the 24h after *end_hour* whose mean RCE is at least *min_price*.
 
-    Morning-peak hours that a later evening hour outranks are omitted. The
-    drop uses the same ratings as battery export, including published RCE
-    past the horizon.
+    Daytime off-peak between the G12 peak blocks is not a sale hour. Morning-peak
+    hours that a later evening hour outranks are omitted. The drop uses the same
+    ratings as battery export, including published RCE past the horizon.
     """
     from .plan_export import (
+        _daytime_offpeak_clocks,
         hour_rce_rating,
         hourly_avg_rce,
         morning_peak_hours_below_later_evening,
@@ -426,9 +427,12 @@ def supercharge_counted_hours(
     slots = max(1, int(slots_per_hour))
     start = int(end_hour)
     stop = start + 24
+    gap = _daytime_offpeak_clocks(cfg)
     ratings: dict[int, float] = {}
     priced: list[int] = []
     for hour in range(start, stop):
+        if hour % 24 in gap:
+            continue
         avg = hourly_avg_rce(rce_series, hour, slots_per_hour=slots)
         rating = hour_rce_rating(rce_series, hour, slots_per_hour=slots)
         if avg is None or rating is None or float(avg) + 1e-9 < float(min_price):
@@ -457,18 +461,38 @@ def supercharge_counted_hours(
     return [hour for hour in priced if hour not in dropped]
 
 
-def apply_morning_supercharge(
+class _SuperchargeWindow:
+    """Counted sale hours of one morning offpeak window, on a no-export replay."""
+
+    def __init__(
+        self,
+        *,
+        peak: int,
+        counted: list[int],
+        starts: dict[int, int],
+        deadlines: dict[int, int],
+        soc_at: list[float],
+        shortfalls: dict[int, float],
+    ) -> None:
+        self.peak = peak
+        self.counted = counted
+        self.starts = starts
+        self.first_step = starts[counted[0]]
+        self.deadlines = deadlines
+        self.soc_at = soc_at
+        self.shortfalls = shortfalls
+
+
+def _supercharge_windows(
     controls: list[HourControl],
     *,
     pv_series: list[float],
     load_series: list[float],
     buy_prices: list[float],
     offpeak_buy: float,
-    charge_targets: list[float],
     initial_soc_kwh: float,
     battery_cap: float,
     min_kwh: float,
-    charge_ac_step: float,
     discharge_dc_step: float,
     inverter_ac_step: float,
     eta_grid: float,
@@ -485,25 +509,21 @@ def apply_morning_supercharge(
     cfg: dict[str, Any],
     today_date,
     skip_leading_slots: int | None = None,
-    min_block_minutes: int | None = None,
-    min_hourly_kwh: float = 0.0,
-) -> list[HourControl]:
-    """Add Smart+ DC on a morning offpeak window that already has grid charge.
+) -> list[_SuperchargeWindow]:
+    """Smart+ sale need per morning offpeak window that already has grid charge.
 
-    Counted hours are the next 24h after that window's peak with mean RCE at
-    or above grid.super_rce_min_pln_kwh, minus morning peaks a later evening
-    hour outranks. Extra battery DC is timer discharge kW times that count,
-    cut so SOC at the first counted hour stays at or under 95%. Grid AC for
-    the extra DC is DC / eta_grid inside the charge pass. Skip the window
-    when that SOC is already above 90%, or when the window has no charge.
+    Counted hours are the sale hours in the next 24h after that window's peak
+    with mean RCE at or above grid.super_rce_min_pln_kwh, minus morning peaks a
+    later evening hour outranks. Each counted hour sells timer discharge kW
+    minus the house drain of that hour. Its deadline is the first off-peak step
+    after it (13:00 for the morning peak, 22:00 for the evening peak). The
+    shortfall at a deadline is the sales due by it minus the SOC above
+    max(min SOC, reserve) there, replaying the controls' charge with no export.
     """
     from .g12_pricing import get_g12_zone
     from .grid_config import super_rce_min_pln_kwh
     from .plan_dp import dp_step_clock
     from .simulation_config import plan_timer_discharge_power_kw
-
-    if not controls or not cfg.get("smart_plus_enabled"):
-        return controls
 
     slots = slots_per_hour_from_scale(step_scale)
     if skip_leading_slots is None:
@@ -542,30 +562,27 @@ def apply_morning_supercharge(
     horizon_hours = sorted({
         (int(rce_step_offset) + i) // slots for i in range(len(controls))
     })
-    # Morning pre-peak target stays on this list so a later charge pass
-    # (after the sale) still packs the supercharge.
-    targets = charge_targets
     min_price = super_rce_min_pln_kwh(cfg)
     discharge_kw = plan_timer_discharge_power_kw(cfg)
-    out = controls
+    offset = int(rce_step_offset)
+    found: list[_SuperchargeWindow] = []
 
     for start, peak in windows:
         clock = dp_step_clock(
             today_date, peak,
-            rce_step_offset=int(rce_step_offset), slots_per_hour=slots,
+            rce_step_offset=offset, slots_per_hour=slots,
         )
         if clock.hour >= 12 or get_g12_zone(clock, cfg) != "peak":
             continue
         charged = sum(
-            float(out[step].grid_charge_kw)
+            float(controls[step].grid_charge_kw)
             for step in range(max(start, fill_from), peak)
-            if step < len(out)
+            if step < len(controls)
         )
         if charged <= eps_step:
             continue
-        end_hour = (int(rce_step_offset) + peak) // slots
         counted = supercharge_counted_hours(
-            end_hour=end_hour,
+            end_hour=(offset + peak) // slots,
             rce_series=rce_series,
             slots_per_hour=slots,
             horizon_hours=horizon_hours,
@@ -574,19 +591,130 @@ def apply_morning_supercharge(
             cfg=cfg,
             today_date=today_date,
         )
+        counted = [h for h in counted if 0 <= h * slots - offset < len(controls)]
         if not counted:
             continue
-        first_step = counted[0] * slots - int(rce_step_offset)
-        soc = float(initial_soc_kwh)
-        for step in range(max(0, min(first_step, len(out)))):
-            prev = out[step]
-            soc = _play(soc, step, HourControl(
+        deadlines: dict[int, int] = {}
+        for hour in counted:
+            step = (hour + 1) * slots - offset
+            while step < len(controls) and _is_peak(step):
+                step += 1
+            deadlines[hour] = min(step, len(controls))
+        soc_at = [float(initial_soc_kwh)]
+        for step in range(max(deadlines.values())):
+            prev = controls[step]
+            soc_at.append(_play(soc_at[-1], step, HourControl(
                 float(prev.grid_charge_kw), 0.0, prev.load_from_grid,
-            ))
+            )))
+        sale_dc: dict[int, float] = {}
+        for hour in counted:
+            s0 = hour * slots - offset
+            s1 = min(s0 + slots, len(soc_at) - 1)
+            drain = max(0.0, soc_at[s0] - soc_at[s1])
+            sale_dc[hour] = max(0.0, discharge_kw * (s1 - s0) / slots - drain)
+        shortfalls: dict[int, float] = {}
+        for deadline in sorted(set(deadlines.values())):
+            due = sum(sale_dc[h] for h in counted if deadlines[h] <= deadline)
+            reserve = float(reserves[deadline]) if deadline < len(reserves) else min_kwh
+            spare = soc_at[deadline] - max(min_kwh, reserve)
+            shortfalls[deadline] = due - spare
+        found.append(_SuperchargeWindow(
+            peak=peak,
+            counted=counted,
+            starts={h: h * slots - offset for h in counted},
+            deadlines=deadlines,
+            soc_at=soc_at,
+            shortfalls=shortfalls,
+        ))
+    return found
+
+
+def apply_morning_supercharge(
+    controls: list[HourControl],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    buy_prices: list[float],
+    offpeak_buy: float,
+    charge_targets: list[float],
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    charge_ac_step: float,
+    discharge_dc_step: float,
+    inverter_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    step_scale: float,
+    rce_series: list[float | None],
+    rce_step_offset: int,
+    export_window_start_hour: int,
+    cfg: dict[str, Any],
+    today_date,
+    skip_leading_slots: int | None = None,
+    min_block_minutes: int | None = None,
+    min_hourly_kwh: float = 0.0,
+) -> list[HourControl]:
+    """Add Smart+ DC on a morning offpeak window that already has grid charge.
+
+    Extra DC is the largest shortfall over the window's deadlines (see
+    `_supercharge_windows`), cut so SOC at the first counted hour stays at or
+    under 95%. Grid AC for the extra DC is DC / eta_grid inside the charge
+    pass. Skip the window when that SOC is already above 90%.
+    """
+    if not controls or not cfg.get("smart_plus_enabled"):
+        return controls
+
+    sim = dict(
+        pv_series=pv_series,
+        load_series=load_series,
+        buy_prices=buy_prices,
+        offpeak_buy=offpeak_buy,
+        initial_soc_kwh=initial_soc_kwh,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_dc_step=discharge_dc_step,
+        inverter_ac_step=inverter_ac_step,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step,
+        reserves=reserves,
+        step_scale=step_scale,
+    )
+    # Morning pre-peak target stays on this list so a later charge pass
+    # (after the sale) still packs the supercharge.
+    targets = charge_targets
+    windows = dict(
+        sim,
+        rce_series=rce_series,
+        rce_step_offset=rce_step_offset,
+        export_window_start_hour=export_window_start_hour,
+        cfg=cfg,
+        today_date=today_date,
+        skip_leading_slots=skip_leading_slots,
+    )
+    out = controls
+    for peak in [w.peak for w in _supercharge_windows(out, **windows)]:
+        window = next(
+            (w for w in _supercharge_windows(out, **windows) if w.peak == peak),
+            None,
+        )
+        if window is None:
+            continue
+        soc = window.soc_at[window.first_step]
         if battery_cap > 0 and (soc / battery_cap) * 100.0 > SUPERCHARGE_SKIP_ABOVE_SOC_PCT:
             continue
+        shortfall = max(0.0, max(window.shortfalls.values()))
         headroom = max(0.0, battery_cap * SUPERCHARGE_CAP_SOC_PCT / 100.0 - soc)
-        extra_dc = min(discharge_kw * len(counted), headroom)
+        extra_dc = min(shortfall, headroom)
         if extra_dc <= eps_step:
             continue
         idx = min(peak - 1, len(targets) - 1)
@@ -595,28 +723,90 @@ def apply_morning_supercharge(
         targets[idx] = min(float(battery_cap), float(targets[idx]) + extra_dc)
         out = plan_battery_grid_charge(
             out,
-            pv_series=pv_series,
-            load_series=load_series,
-            buy_prices=buy_prices,
-            offpeak_buy=offpeak_buy,
+            **sim,
             charge_targets=targets,
-            initial_soc_kwh=initial_soc_kwh,
-            battery_cap=battery_cap,
-            min_kwh=min_kwh,
             charge_ac_step=charge_ac_step,
-            discharge_dc_step=discharge_dc_step,
-            inverter_ac_step=inverter_ac_step,
-            eta_grid=eta_grid,
-            eta_out=eta_out,
-            eta_pv_load=eta_pv_load,
-            eta_pv_grid=eta_pv_grid,
-            eta_pv_battery=eta_pv_battery,
-            eps_step=eps_step,
-            reserves=reserves,
-            step_scale=step_scale,
             skip_leading_slots=skip_leading_slots,
             min_block_minutes=min_block_minutes,
             min_hourly_kwh=min_hourly_kwh,
         )
     return out
+
+
+def relieve_supercharge_reserves(
+    controls: list[HourControl],
+    *,
+    pv_series: list[float],
+    load_series: list[float],
+    buy_prices: list[float],
+    offpeak_buy: float,
+    initial_soc_kwh: float,
+    battery_cap: float,
+    min_kwh: float,
+    discharge_dc_step: float,
+    inverter_ac_step: float,
+    eta_grid: float,
+    eta_out: float,
+    eta_pv_load: float,
+    eta_pv_grid: float,
+    eta_pv_battery: float,
+    eps_step: float,
+    reserves: list[float],
+    step_scale: float,
+    rce_series: list[float | None],
+    rce_step_offset: int,
+    export_window_start_hour: int,
+    cfg: dict[str, Any],
+    today_date,
+    skip_leading_slots: int | None = None,
+) -> list[float]:
+    """Lower the survive reserve in Smart+ sale hours the charged battery cannot cover.
+
+    For each deadline with a shortfall left after the charge in *controls*,
+    steps from the first counted hour up to that deadline drop their reserve
+    by the shortfall, down to min SOC plus the house drain until the deadline.
+    """
+    if not controls or not reserves or not cfg.get("smart_plus_enabled"):
+        return reserves
+    out = list(reserves)
+    for window in _supercharge_windows(
+        controls,
+        pv_series=pv_series,
+        load_series=load_series,
+        buy_prices=buy_prices,
+        offpeak_buy=offpeak_buy,
+        initial_soc_kwh=initial_soc_kwh,
+        battery_cap=battery_cap,
+        min_kwh=min_kwh,
+        discharge_dc_step=discharge_dc_step,
+        inverter_ac_step=inverter_ac_step,
+        eta_grid=eta_grid,
+        eta_out=eta_out,
+        eta_pv_load=eta_pv_load,
+        eta_pv_grid=eta_pv_grid,
+        eta_pv_battery=eta_pv_battery,
+        eps_step=eps_step,
+        reserves=reserves,
+        step_scale=step_scale,
+        rce_series=rce_series,
+        rce_step_offset=rce_step_offset,
+        export_window_start_hour=export_window_start_hour,
+        cfg=cfg,
+        today_date=today_date,
+        skip_leading_slots=skip_leading_slots,
+    ):
+        soc_at = window.soc_at
+        for deadline, shortfall in sorted(window.shortfalls.items()):
+            if shortfall <= eps_step:
+                continue
+            first = min(
+                window.starts[h] for h in window.counted
+                if window.deadlines[h] == deadline
+            )
+            for step in range(first, min(deadline, len(out))):
+                drain = max(0.0, soc_at[min(step + 1, deadline)] - soc_at[deadline])
+                floor = min_kwh + drain
+                out[step] = min(out[step], max(floor, out[step] - shortfall))
+    return out
+
 
