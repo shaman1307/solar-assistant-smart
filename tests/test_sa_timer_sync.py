@@ -320,3 +320,51 @@ def test_write_metrics_retries_crc_then_succeeds():
     sleep.assert_awaited_once()
     assert sleep.await_args.args[0] == 2.0
 
+
+def _nov18_charge(hour: int, timer: str) -> dict:
+    return {
+        "hour": hour,
+        "plan_date": "2026-11-18",
+        "start": f"18-11-2026 {hour + 1:02d}:00",
+        "action": "Charging from Grid",
+        "timer_schedule": timer,
+    }
+
+
+def test_charge_stop_one_above_live_soc_is_lifted_so_the_inverter_starts():
+    """04:30–05:00 cap 25% at live SOC 24% does not start. Send 29%."""
+    rows = [_nov18_charge(4, "Chg 04:30-05:00 2.5kW cap25%")]
+    schedule = build_sa_schedule_from_hour_row(
+        rows, 4, _cfg(), existing={"charge_slots": _empty_dis_slots()}, live_soc_pct=24.0,
+    )
+    assert schedule is not None
+    slot = schedule["charge_slots_to_write"][0]
+    assert (slot["from"], slot["to"], slot["power_kw"], slot["capacity_pct"]) == ("04:30", "05:00", 2.5, 29)
+    assert slot["plan_capacity_pct"] == 25
+
+
+def test_charge_stop_well_above_live_soc_stays_on_the_plan():
+    rows = [_nov18_charge(5, "Chg 05:00-06:00 5.8kW cap37%")]
+    schedule = build_sa_schedule_from_hour_row(
+        rows, 5, _cfg(), existing={"charge_slots": _empty_dis_slots()}, live_soc_pct=24.0,
+    )
+    assert schedule is not None
+    assert schedule["charge_slots_to_write"][0]["capacity_pct"] == 37
+
+
+def test_quarter_tick_does_not_raise_a_lifted_charge_stop_again():
+    from src.hour_boundary_scheduler import _quarter_retry_needs_write
+
+    rows = [_nov18_charge(4, "Chg 04:30-05:00 2.5kW cap25%")]
+    live = _empty_dis_slots()
+    live[0] = {
+        "slot": 1, "from": "04:30", "to": "05:00",
+        "capacity_pct": 29, "power_kw": 2.5, "voltage_v": 56.0,
+    }
+    schedule = build_sa_schedule_from_hour_row(
+        rows, 4, _cfg(), existing={"charge_slots": live}, live_soc_pct=25.0,
+    )
+    assert schedule is not None
+    assert schedule["charge_slots_to_write"][0]["capacity_pct"] == 30
+    assert _quarter_retry_needs_write(schedule, {"charge_slots": live, "discharge_slots": []}) is False
+

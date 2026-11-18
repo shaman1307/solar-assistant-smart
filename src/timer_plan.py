@@ -36,6 +36,7 @@ ACTION_TIE_PV = "PV to Load. On-Grid"
 ACTION_TIE_GRID = "Grid Usage for Load"
 ACTION_CHARGE_GRID = "Charging from Grid"
 # SRNE timed charge does not start unless stop % is clearly above live SOC.
+CHARGE_CAP_MIN_HEADROOM_PCT = 5
 _FORBID_APPLIES = ("charge", "discharge", "both")
 ACTION_CHARGE_SOLAR = "Charging from PV"
 ACTION_DISCHARGE_LOAD = "Discharging to Load"
@@ -1563,6 +1564,28 @@ def _slot_holds_segment(slot: dict[str, Any], seg: dict[str, Any], power_kw: flo
     return _slot_covers_minute(slot, seg_start) and _slot_covers_minute(slot, seg_end - 1)
 
 
+def _charge_cap_covers_plan(slot_cap: int, plan_cap: int) -> bool:
+    """True when the inverter stop is the plan SOC or the headroom above it."""
+    return plan_cap <= slot_cap <= plan_cap + CHARGE_CAP_MIN_HEADROOM_PCT
+
+
+def _window_already_held(existing: dict[str, Any], desired: dict[str, Any], *, charge: bool) -> bool:
+    """True when this inverter slot already is the window `desired` would send."""
+    if not _slot_is_active(existing):
+        return False
+    if str(existing.get("from") or "") != str(desired.get("from") or ""):
+        return False
+    if str(existing.get("to") or "") != str(desired.get("to") or ""):
+        return False
+    if abs(float(existing.get("power_kw") or 0) - float(desired.get("power_kw") or 0)) > 0.05:
+        return False
+    live_cap = int(round(float(existing.get("capacity_pct") or 0)))
+    plan_cap = int(round(float(desired.get("plan_capacity_pct", desired.get("capacity_pct")) or 0)))
+    if charge:
+        return _charge_cap_covers_plan(live_cap, plan_cap)
+    return live_cap == plan_cap
+
+
 def _timer_window_writes(
     rows: list[dict],
     hour: int,
@@ -1570,6 +1593,8 @@ def _timer_window_writes(
     kind: str,
     existing_slots: list[dict[str, Any]],
     power_cap_kw: float,
+    *,
+    live_soc_pct: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """SA slots to write for this hour's charge or discharge.
 
@@ -1577,8 +1602,10 @@ def _timer_window_writes(
     sends that whole range with the SOC of the last hour, even when a slot
     already has those values. A later hour of that same run sends nothing
     when an inverter slot spans that hour at the run power and ends where the
-    run ends. Middle hours leave the slot SOC as written; the last hour of the
-    run resends the window when the slot SOC differs from the plan SOC. A
+    run ends. Middle hours leave the slot SOC as written. The last hour resends
+    when the slot SOC is no longer the plan SOC. A charge stop within 1% of
+    live SOC is raised by CHARGE_CAP_MIN_HEADROOM_PCT so the inverter starts;
+    that raised stop is not sent again while it still covers the plan SOC. A
     partial hour, or a full hour whose power differs, is sent as its own window.
     """
     slot_kind = "charge" if kind == "chg" else "discharge"
@@ -1619,13 +1646,22 @@ def _timer_window_writes(
     first = run[0][2]
     last = run[-1][2]
     power = _send_power_kw(first, power_cap_kw)
-    cap = int(last["capacity_pct"])
+    plan_cap = int(last["capacity_pct"])
+    cap = plan_cap
+    if kind == "chg" and live_soc_pct is not None:
+        try:
+            floor = min(100, int(float(live_soc_pct)) + CHARGE_CAP_MIN_HEADROOM_PCT)
+        except (TypeError, ValueError):
+            floor = plan_cap
+        if plan_cap < floor:
+            cap = floor
     tpl = slots[0]
     desired = {
         "slot": 1,
         "from": first["from"],
         "to": last["to"],
         "capacity_pct": cap,
+        "plan_capacity_pct": plan_cap,
         "voltage_v": float(tpl.get("voltage_v", 58.0 if kind == "chg" else 42.0)),
         "power_kw": power,
     }
@@ -1638,7 +1674,7 @@ def _timer_window_writes(
     if continues_previous and any(
         _slot_holds_segment(slot, seg, power)
         and str(slot.get("to") or "") == desired["to"]
-        and (not last_hour or int(round(float(slot.get("capacity_pct") or 0))) == cap)
+        and (not last_hour or _window_already_held(slot, desired, charge=kind == "chg"))
         for slot in slots
     ):
         return slots, []
@@ -1661,6 +1697,7 @@ def build_sa_schedule_from_hour_row(
     hour: int,
     cfg: dict,
     existing: dict[str, Any] | None = None,
+    live_soc_pct: float | None = None,
 ) -> dict[str, Any] | None:
     """SA write payload from one Energy arbitrage hour row (Timer Schedule column)."""
     row = next(
@@ -1692,6 +1729,7 @@ def build_sa_schedule_from_hour_row(
             rows, hour, plan_date, "chg",
             existing.get("charge_slots") or [],
             charge_cap,
+            live_soc_pct=live_soc_pct,
         )
     else:
         charge_slots = _ensure_three_slots(existing.get("charge_slots", []), "charge")

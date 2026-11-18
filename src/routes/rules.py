@@ -183,7 +183,15 @@ async def api_apply_plan() -> dict[str, Any]:
             "planned_action": None,
         }
     rules = await sa_client.get_rules(cfg)
-    schedule = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
+    metrics = await sa_client.get_live_metrics(cfg)
+    raw_soc = metrics.get("battery_soc")
+    try:
+        live_soc_pct = float(raw_soc) if raw_soc is not None else None
+    except (TypeError, ValueError):
+        live_soc_pct = None
+    schedule = build_sa_schedule_from_hour_row(
+        rows, hour, cfg, existing=rules, live_soc_pct=live_soc_pct,
+    )
     if not schedule:
         return {
             "ok": False,

@@ -23,7 +23,7 @@ from .influxdb import now_warsaw
 from .sqlite_store import read_plan
 from .timer_plan import (
     _slot_covers_minute,
-    _timer_slot_matches,
+    _window_already_held,
     build_sa_schedule_from_hour_row,
     hour_has_timer_schedule,
     timer_charge_active_at,
@@ -56,6 +56,15 @@ _last_hour_boundary_sync: dict[str, Any] = {
 
 def get_last_hour_boundary_sync() -> dict[str, Any]:
     return dict(_last_hour_boundary_sync)
+
+
+async def _battery_soc_pct(cfg: dict) -> float | None:
+    metrics = await sa_client.get_live_metrics(cfg)
+    raw = metrics.get("battery_soc")
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _smart_mode_enabled(cfg: dict) -> bool:
@@ -180,7 +189,10 @@ def _quarter_retry_needs_write(
         for slot in schedule.get(write_key) or []:
             if float(slot.get("power_kw") or 0) <= 0:
                 continue
-            if not any(_timer_slot_matches(existing, slot) for existing in live):
+            if not any(
+                _window_already_held(existing, slot, charge=write_key.startswith("charge"))
+                for existing in live
+            ):
                 return True
     return False
 
@@ -220,7 +232,9 @@ async def _sync_timer_from_hour_row(
 
     # Write the plan timer as-is — never shift start times.
     rules = await sa_client.get_rules(cfg)
-    schedule = build_sa_schedule_from_hour_row(rows, hour, cfg, existing=rules)
+    schedule = build_sa_schedule_from_hour_row(
+        rows, hour, cfg, existing=rules, live_soc_pct=await _battery_soc_pct(cfg),
+    )
     if not schedule:
         status["skipped"] = True
         status["skip_reason"] = "unparsed_timer_schedule"
@@ -421,7 +435,10 @@ async def run_hour_boundary_limit_home(now=None) -> dict[str, Any]:
         )
         if charge_active or discharge_active:
             rules = await sa_client.get_rules(cfg)
-            schedule = build_sa_schedule_from_hour_row(rows, now.hour, cfg, existing=rules)
+            schedule = build_sa_schedule_from_hour_row(
+                rows, now.hour, cfg, existing=rules,
+                live_soc_pct=await _battery_soc_pct(cfg),
+            )
             needs_write = _quarter_retry_needs_write(schedule, rules)
             if needs_write or (
                 schedule is None and _sa_missing_active_plan_timer(timer_txt, now, rules)

@@ -152,6 +152,7 @@ def _run_day() -> FakeInverter:
                 patch.object(hbs, "run_work_mode_hour_start", work_mode_ok),
                 patch.object(hbs, "run_work_mode_limit_home", limit_ok),
                 patch.object(sa_client, "get_rules", inverter.get_rules),
+                patch.object(sa_client, "get_live_metrics", AsyncMock(return_value={"battery_soc": 50.0})),
                 patch.object(sa_client, "set_timer_schedule", inverter.set_timer_schedule),
                 patch.object(sa_client, "set_timed_power_flags", inverter.set_timed_power_flags),
             ):
