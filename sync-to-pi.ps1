@@ -68,6 +68,7 @@ $files = @(
     "src\plan_cache_merge.py",
     "src\plan_timer_override.py",
     "src\scheduler.py",
+    "src\inverter_setting_alarm.py",
     "src\hour_boundary_scheduler.py",
     "src\work_mode_scheduler.py",
     "src\sa_client.py",

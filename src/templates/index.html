@@ -12,6 +12,15 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     [x-cloak] { display: none; }
+    @keyframes setting-alarm-pulse {
+      0%, 100% { background-color: #fdecef; }
+      50% { background-color: #f6c9d2; }
+    }
+    body.setting-alarm,
+    body.setting-alarm .bg-white,
+    body.setting-alarm fieldset {
+      animation: setting-alarm-pulse 2.4s ease-in-out infinite;
+    }
     /* Native date/month: whole field opens picker (showPicker); keep visible calendar icon. */
     input[type="date"],
     input[type="month"] {
@@ -2988,6 +2997,44 @@
               class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
           </div>
         </div>
+      </fieldset>
+
+      <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+        <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Inverter setting alarm</legend>
+        <p class="text-xs text-gray-500">Every 15 min, To grid battery capacity (%) and Back to battery capacity (%) are compared with the values saved in Simulation. If they differ, something changed the registers on the inverter: the pages turn pale pink and one email is sent.</p>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Alert email</label>
+          <input name="alert_email" type="email" placeholder="you@example.com"
+            class="w-full max-w-md bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">SMTP host</label>
+            <input name="alert_smtp.host" type="text" placeholder="smtp.example.com"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">SMTP port</label>
+            <input name="alert_smtp.port" type="number" step="1" min="1" max="65535" placeholder="587"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">SMTP username</label>
+            <input name="alert_smtp.username" type="text"
+              class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">SMTP password</label>
+            <div class="flex gap-2">
+              <input id="alert-smtp-password" name="alert_smtp.password" type="password" placeholder="Leave blank to keep the saved password"
+                class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-amber-500" />
+              <button type="button" id="alert-smtp-password-show"
+                class="shrink-0 px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 bg-white">Show</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" id="setting-alarm-test"
+          class="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-800 bg-white">Test alarm</button>
       </fieldset>
 
       <!-- SA connection -->
@@ -11586,6 +11633,51 @@ setInterval(() => {
     </div>
   </div>
 </div>
+
+<script>
+function applySettingAlarm(data) {
+  document.body.classList.toggle('setting-alarm', !!data.active);
+  const btn = document.getElementById('setting-alarm-test');
+  if (btn) btn.textContent = data.test ? 'Stop test' : 'Test alarm';
+}
+
+async function refreshSettingAlarm() {
+  try {
+    const res = await fetch('api/setting-alarm');
+    if (!res.ok) return;
+    applySettingAlarm(await res.json());
+  } catch (err) {
+    /* Leave the current alarm paint in place when the status request fails. */
+  }
+}
+
+document.getElementById('alert-smtp-password-show')?.addEventListener('click', () => {
+  const input = document.getElementById('alert-smtp-password');
+  const btn = document.getElementById('alert-smtp-password-show');
+  if (!input || !btn) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+});
+
+document.getElementById('setting-alarm-test')?.addEventListener('click', async () => {
+  const stopping = document.getElementById('setting-alarm-test')?.textContent === 'Stop test';
+  try {
+    const res = await fetch('api/setting-alarm/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !stopping }),
+    });
+    if (!res.ok) return;
+    applySettingAlarm(await res.json());
+  } catch (err) {
+    /* Keep the current alarm paint when the test request fails. */
+  }
+});
+
+refreshSettingAlarm();
+setInterval(refreshSettingAlarm, 30000);
+</script>
 
 </body>
 </html>

@@ -40,6 +40,8 @@ RUNTIME_ROOT_KEYS: tuple[str, ...] = (
     "plan_overrides",
     "active_template",
     "_charge_rate_kw",
+    "alert_email",
+    "alert_smtp",
 )
 
 

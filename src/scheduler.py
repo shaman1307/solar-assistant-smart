@@ -9,6 +9,7 @@ Balance automation scheduler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -112,6 +113,16 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
 
     try:
         cfg = load_config()
+        try:
+            from . import sa_client
+            from .inverter_setting_alarm import record_capacity_reading
+
+            rules = await sa_client.get_rules(cfg)
+            await asyncio.to_thread(
+                record_capacity_reading, cfg, rules, checked_at=ran_at,
+            )
+        except Exception:
+            log.exception("Inverter capacity setting check failed")
         # Floor to the scheduled :00/:15/:30/:45 tick before long OM/sim work so
         # merge still finalizes the just-completed tick (esp. previous-hour q3).
         # The :31 cron floors to :30.

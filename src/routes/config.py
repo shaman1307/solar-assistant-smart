@@ -18,6 +18,7 @@ from ..config_templates import (
     validate_template_name,
 )
 from .. import sa_client
+from ..inverter_setting_alarm import alarm_status, set_test_alarm
 from ..plan_simulation import hourly_plan_refresh
 from ..simulation_config import normalize_battery_power_limits
 from ..timer_plan import normalize_timer_forbidden
@@ -67,17 +68,43 @@ async def api_reload_caches() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/api/setting-alarm")
+async def api_setting_alarm() -> dict[str, Any]:
+    """Whether the last quarter reading disagreed with saved capacity settings."""
+    return alarm_status()
+
+
+@router.post("/api/setting-alarm/test")
+async def api_setting_alarm_test(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Show or hide the pale-pink alarm on every page. Does not send email."""
+    active = True if body is None else bool(body.get("active", True))
+    return set_test_alarm(active)
+
+
+def capacity_register_writes(
+    existing: dict[str, Any],
+    to_grid: int,
+    back_to: int,
+) -> list[tuple[str, str]]:
+    """Inverter capacity topics whose saved config value is changing."""
+    saved = (existing.get("inverter") or {})
+    writes: list[tuple[str, str]] = []
+    for key, value in (
+        ("to_grid_battery_capacity", to_grid),
+        ("back_to_battery_capacity", back_to),
+    ):
+        previous = saved.get(key)
+        if previous is None or int(previous) != value:
+            writes.append((f"{sa_client._INVERTER_PREFIX}/{key}", str(value)))
+    return writes
+
+
 @router.get("/api/config")
 async def api_get_config() -> dict[str, Any]:
     cfg = load_config()
     cfg.pop("_charge_rate_kw", None)
     cfg.pop("smart_mode_enabled", None)
     cfg.pop("smart_plus_enabled", None)
-    rules = await sa_client.get_rules(cfg, fresh=True)
-    inv = cfg.setdefault("inverter", {})
-    for key in ("to_grid_battery_capacity", "back_to_battery_capacity"):
-        if rules.get(key) is not None:
-            inv[key] = int(rules[key])
     cfg["_template_meta"] = _template_meta_payload()
     return cfg
 
@@ -152,6 +179,15 @@ async def api_save_config(body: dict) -> dict[str, str]:
         body["active_template"] = runtime["active_template"]
     if "plan_overrides" not in body and existing.get("plan_overrides"):
         body["plan_overrides"] = existing["plan_overrides"]
+    smtp = body.get("alert_smtp")
+    if isinstance(smtp, dict) and not str(smtp.get("password") or "").strip():
+        previous = (existing.get("alert_smtp") or {}).get("password")
+        if previous:
+            smtp["password"] = previous
+        else:
+            smtp.pop("password", None)
+    if "alert_email" in body:
+        body["alert_email"] = str(body.get("alert_email") or "").strip()
     inv = body["inverter"]
     to_grid = int(inv["to_grid_battery_capacity"])
     back_to = int(inv["back_to_battery_capacity"])
@@ -162,14 +198,10 @@ async def api_save_config(body: dict) -> dict[str, str]:
         )
     inv["to_grid_battery_capacity"] = to_grid
     inv["back_to_battery_capacity"] = back_to
-    await sa_client._write_metrics(
-        body,
-        [
-            (f"{sa_client._INVERTER_PREFIX}/to_grid_battery_capacity", str(to_grid)),
-            (f"{sa_client._INVERTER_PREFIX}/back_to_battery_capacity", str(back_to)),
-        ],
-    )
-    sa_client.invalidate_rules_cache()
+    writes = capacity_register_writes(existing, to_grid, back_to)
+    if writes:
+        await sa_client._write_metrics(body, writes)
+        sa_client.invalidate_rules_cache()
     normalize_battery_power_limits(body)
     ts = body.setdefault("timer_schedule", {})
     if isinstance(ts, dict):
