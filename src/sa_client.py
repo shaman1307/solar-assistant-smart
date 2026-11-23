@@ -690,13 +690,25 @@ async def set_grid_charging(
     settings: dict[str, str] = cfg["sa"]["settings"]
     topic = settings["grid_charge_switch"]
     target = _grid_charge_switch(enabled)
-    writes: list[tuple[str, str]] = [(topic, target)]
     amps: int | None = None
     if current_a is not None:
         amps = max(1, min(_MAX_GRID_CHARGE_CURRENT_A, int(current_a)))
     elif enabled and power_kw > 0:
         amps = _grid_charge_current_a(power_kw)
+    rules = await get_rules(cfg, fresh=True)
+    known = bool(rules.get("sa_online")) and not rules.get("stale")
+    switch_needed = not known or bool(rules.get("grid_charge_enabled")) != bool(enabled)
+    amp_needed = False
     if amps is not None and settings.get("charge_current_limit"):
+        live_a = rules.get("charge_current_a") if known else None
+        amp_needed = live_a is None or int(round(float(live_a))) != amps
+    if not switch_needed and not amp_needed:
+        log.info("Grid charging already %s", "ON" if enabled else "OFF")
+        return True
+    writes: list[tuple[str, str]] = []
+    if switch_needed:
+        writes.append((topic, target))
+    if amp_needed and settings.get("charge_current_limit"):
         writes.append((settings["charge_current_limit"], str(amps)))
     try:
         await _write_metrics(cfg, writes, lock_wait_s=90.0)
@@ -1004,32 +1016,45 @@ async def set_timed_power_flags(
     timed_charge_enabled: bool | None = None,
     timed_discharge_enabled: bool | None = None,
 ) -> bool:
-    """Write SA Power tab toggles; Timed charge also asserts Grid charge policy."""
+    """Write SA Power tab toggles that differ from the inverter.
+
+    Timed charge also asserts Grid charge when that switch differs.
+    """
     p = _INVERTER_PREFIX
+    rules = await get_rules(cfg, fresh=True)
+    known = bool(rules.get("sa_online")) and not rules.get("stale")
     writes: list[tuple[str, str]] = []
     if timed_charge_enabled is not None:
-        writes.append((f"{p}/timed_charge", _sa_switch(bool(timed_charge_enabled))))
+        live = rules.get("timed_charge_enabled") if known else None
+        if _checkbox_write(bool(timed_charge_enabled), live) is not None:
+            writes.append((f"{p}/timed_charge", _sa_switch(bool(timed_charge_enabled))))
     if timed_discharge_enabled is not None:
-        writes.append((f"{p}/timed_discharge", _sa_switch(bool(timed_discharge_enabled))))
-    if not writes:
+        live = rules.get("timed_discharge_enabled") if known else None
+        if _checkbox_write(bool(timed_discharge_enabled), live) is not None:
+            writes.append((f"{p}/timed_discharge", _sa_switch(bool(timed_discharge_enabled))))
+    if not writes and timed_charge_enabled is None:
         return False
     try:
-        await _write_metrics(cfg, writes, lock_wait_s=90.0)
+        if writes:
+            await _write_metrics(cfg, writes, lock_wait_s=90.0)
+            invalidate_rules_cache()
         log.info(
-            "Timed power flags — charge=%s discharge=%s",
+            "Timed power flags %s — charge=%s discharge=%s",
+            "written" if writes else "already match",
             timed_charge_enabled,
             timed_discharge_enabled,
         )
-        invalidate_rules_cache()
         if timed_charge_enabled is not None:
-            # Policy 1: Grid charge follows Timed charge (verify can take 30–90s).
-            ok_grid = await set_grid_charging(
-                cfg,
-                enabled=bool(timed_charge_enabled),
-                verify=True,
-            )
-            if not ok_grid:
-                return False
+            grid_live = rules.get("grid_charge_enabled") if known else None
+            if _checkbox_write(bool(timed_charge_enabled), grid_live) is not None:
+                # Grid charge follows Timed charge (verify can take 30–90s).
+                ok_grid = await set_grid_charging(
+                    cfg,
+                    enabled=bool(timed_charge_enabled),
+                    verify=True,
+                )
+                if not ok_grid:
+                    return False
         return True
     except Exception as exc:
         log.error("Failed to set timed power flags: %r", exc)

@@ -368,3 +368,99 @@ def test_quarter_tick_does_not_raise_a_lifted_charge_stop_again():
     assert schedule["charge_slots_to_write"][0]["capacity_pct"] == 30
     assert _quarter_retry_needs_write(schedule, {"charge_slots": live, "discharge_slots": []}) is False
 
+
+def test_timed_flags_already_off_are_not_written():
+    from src import sa_client
+
+    writes: list = []
+
+    async def fake_rules(_cfg, fresh=False):
+        return {
+            "sa_online": True,
+            "timed_charge_enabled": False,
+            "timed_discharge_enabled": False,
+            "grid_charge_enabled": False,
+        }
+
+    async def fake_write(_cfg, items, lock_wait_s=90.0):
+        writes.append(list(items))
+
+    async def run():
+        with (
+            patch.object(sa_client, "get_rules", fake_rules),
+            patch.object(sa_client, "_write_metrics", fake_write),
+        ):
+            ok = await sa_client.set_timed_power_flags(
+                {},
+                timed_charge_enabled=False,
+                timed_discharge_enabled=False,
+            )
+        assert ok is True
+
+    asyncio.run(run())
+    assert writes == []
+
+
+def test_timed_charge_that_is_still_on_is_written():
+    from src import sa_client
+
+    writes: list = []
+    grid: list = []
+
+    async def fake_rules(_cfg, fresh=False):
+        return {
+            "sa_online": True,
+            "timed_charge_enabled": True,
+            "timed_discharge_enabled": False,
+            "grid_charge_enabled": True,
+        }
+
+    async def fake_write(_cfg, items, lock_wait_s=90.0):
+        writes.append(list(items))
+
+    async def fake_grid(_cfg, *, enabled, verify=True):
+        grid.append(enabled)
+        return True
+
+    async def run():
+        with (
+            patch.object(sa_client, "get_rules", fake_rules),
+            patch.object(sa_client, "_write_metrics", fake_write),
+            patch.object(sa_client, "set_grid_charging", fake_grid),
+        ):
+            ok = await sa_client.set_timed_power_flags(
+                {},
+                timed_charge_enabled=False,
+                timed_discharge_enabled=False,
+            )
+        assert ok is True
+
+    asyncio.run(run())
+    assert writes == [[("inverter_1/timed_charge", "0")]]
+    assert grid == [False]
+
+
+def test_grid_charge_already_off_is_not_written():
+    from src import sa_client
+
+    writes: list = []
+
+    async def fake_rules(_cfg, fresh=False):
+        return {"sa_online": True, "grid_charge_enabled": False, "charge_current_a": 0}
+
+    async def fake_write(_cfg, items, lock_wait_s=90.0):
+        writes.append(list(items))
+
+    cfg = {"sa": {"settings": {"grid_charge_switch": "inverter_1/grid_charge"}}}
+
+    async def run():
+        with (
+            patch.object(sa_client, "get_rules", fake_rules),
+            patch.object(sa_client, "_write_metrics", fake_write),
+        ):
+            ok = await sa_client.set_grid_charging(cfg, enabled=False)
+        assert ok is True
+
+    asyncio.run(run())
+    assert writes == []
+
