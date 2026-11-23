@@ -15,10 +15,22 @@ _CAPACITY_FIELDS: tuple[tuple[str, str], ...] = (
     ("back_to_battery_capacity", "Back to battery capacity (%)"),
 )
 
+CAPACITY_WRITE_ATTEMPTS = 3
+CAPACITY_WRITE_PAUSE_S = 30
+
 _alarm_active = False
 _test_alarm = False
 _mismatches: list[dict[str, Any]] = []
 _checked_at: str | None = None
+# idle: readings match, or a mismatch has not been handled yet.
+# accepted: a write landed. The next divergent quarter alarms without writing.
+# hold: alarm already sent. Later divergent quarters do not write again.
+_sync_phase = "idle"
+
+
+def _capacity_reading_complete(rules: dict[str, Any]) -> bool:
+    """Both capacity registers came back as numbers."""
+    return all(rules.get(key) is not None for key, _label in _CAPACITY_FIELDS)
 
 
 def capacity_setting_mismatches(
@@ -74,28 +86,146 @@ def set_test_alarm(active: bool) -> dict[str, Any]:
     return alarm_status()
 
 
-def record_capacity_reading(
+def reset_capacity_sync_state() -> None:
+    """Clear the in-memory alarm and the write/hold phase."""
+    global _alarm_active, _test_alarm, _mismatches, _checked_at, _sync_phase
+    _alarm_active = False
+    _test_alarm = False
+    _mismatches = []
+    _checked_at = None
+    _sync_phase = "idle"
+
+
+def overlay_live_capacity(cfg: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
+    """Copy a complete inverter capacity reading onto the plan configuration."""
+    if not _capacity_reading_complete(rules):
+        return cfg
+    inv = cfg.setdefault("inverter", {})
+    for key, _label in _CAPACITY_FIELDS:
+        inv[key] = int(rules[key])
+    return cfg
+
+
+def saved_capacity_writes(cfg: dict[str, Any], rules: dict[str, Any]) -> list[tuple[str, str]]:
+    """Saved Configuration values for fields the inverter reading does not match."""
+    from .sa_client import _INVERTER_PREFIX
+
+    return [
+        (f"{_INVERTER_PREFIX}/{row['key']}", str(row["configured"]))
+        for row in capacity_setting_mismatches(cfg, rules)
+    ]
+
+
+def _clear_alarm() -> None:
+    global _alarm_active, _test_alarm, _mismatches
+    _alarm_active = False
+    _test_alarm = False
+    _mismatches = []
+
+
+def _raise_alarm(
     cfg: dict[str, Any],
-    rules: dict[str, Any],
-    *,
-    checked_at: str | None = None,
-    send_email: Callable[[dict[str, Any], list[dict[str, Any]]], None] | None = None,
-) -> dict[str, Any]:
-    """Update the alarm from one rules reading. Mail only when the alarm starts."""
-    global _alarm_active, _test_alarm, _mismatches, _checked_at
-    found = capacity_setting_mismatches(cfg, rules)
+    found: list[dict[str, Any]],
+    send_email: Callable[[dict[str, Any], list[dict[str, Any]]], None] | None,
+    reason: str,
+) -> None:
+    global _alarm_active, _test_alarm, _mismatches
     started = bool(found) and (not _alarm_active or _test_alarm)
     _test_alarm = False
     _alarm_active = bool(found)
     _mismatches = found
+    log.info(
+        "Capacity mismatch (%s): %s",
+        reason,
+        "; ".join(
+            f"{row['label']} inverter {row['inverter']} configuration {row['configured']}"
+            for row in found
+        ),
+    )
+    if not started:
+        return
+    sender = send_email or send_alarm_email
+    try:
+        sender(cfg, found)
+    except Exception:
+        log.exception("Inverter setting alarm email failed")
+
+
+async def reconcile_inverter_capacity(
+    cfg: dict[str, Any],
+    rules: dict[str, Any],
+    *,
+    read: Callable[[], Any],
+    write: Callable[[list[tuple[str, str]]], Any],
+    sleep: Callable[[], Any],
+    send_email: Callable[[dict[str, Any], list[dict[str, Any]]], None] | None = None,
+    checked_at: str | None = None,
+) -> dict[str, Any]:
+    """Write saved capacity values when the inverter differs, then return the live reading.
+
+    The first divergent quarter writes up to three times. Before the second and
+    third write, the inverter is read again. A reading that already matches the
+    saved values ends the writes. The next divergent quarter sends the alarm and
+    does not write. Three writes that do not land also send the alarm.
+    """
+    global _sync_phase, _mismatches, _alarm_active, _test_alarm, _checked_at
     _checked_at = checked_at
-    if started:
-        sender = send_email or send_alarm_email
+    if not _capacity_reading_complete(rules):
+        log.info(
+            "Capacity check skipped — inverter reading incomplete (alarm stays %s)",
+            "on" if _alarm_active else "off",
+        )
+        return rules
+
+    found = capacity_setting_mismatches(cfg, rules)
+    if not found:
+        _sync_phase = "idle"
+        _clear_alarm()
+        return rules
+
+    if _sync_phase == "accepted":
+        _sync_phase = "hold"
+        _raise_alarm(
+            cfg,
+            found,
+            send_email,
+            "inverter diverged again after a successful write",
+        )
+        return rules
+
+    if _sync_phase == "hold":
+        _test_alarm = False
+        _alarm_active = True
+        _mismatches = found
+        return rules
+
+    latest = rules
+    for attempt in range(1, CAPACITY_WRITE_ATTEMPTS + 1):
+        if not capacity_setting_mismatches(cfg, latest):
+            _sync_phase = "accepted"
+            _clear_alarm()
+            return latest
         try:
-            sender(cfg, found)
+            await write(saved_capacity_writes(cfg, latest))
         except Exception:
-            log.exception("Inverter setting alarm email failed")
-    return alarm_status()
+            log.exception("Capacity write attempt %s failed", attempt)
+        await sleep()
+        latest = await read()
+        if not _capacity_reading_complete(latest):
+            log.info("Capacity reread incomplete after attempt %s", attempt)
+            return latest
+    if not capacity_setting_mismatches(cfg, latest):
+        _sync_phase = "accepted"
+        _clear_alarm()
+        return latest
+    _sync_phase = "hold"
+    _raise_alarm(
+        cfg,
+        capacity_setting_mismatches(cfg, latest),
+        send_email,
+        "three writes did not change the inverter",
+    )
+    return latest
 
 
 def send_alarm_email(cfg: dict[str, Any], mismatches: list[dict[str, Any]]) -> None:

@@ -115,12 +115,33 @@ async def run_quarter_plan_refresh(*, sync_sa: bool | None = None) -> dict[str, 
         cfg = load_config()
         try:
             from . import sa_client
-            from .inverter_setting_alarm import record_capacity_reading
-
-            rules = await sa_client.get_rules(cfg)
-            await asyncio.to_thread(
-                record_capacity_reading, cfg, rules, checked_at=ran_at,
+            from .inverter_setting_alarm import (
+                CAPACITY_WRITE_PAUSE_S,
+                overlay_live_capacity,
+                reconcile_inverter_capacity,
             )
+
+            rules = await sa_client.get_rules(cfg, fresh=True)
+
+            async def _read_capacity() -> dict[str, Any]:
+                return await sa_client.get_rules(cfg, fresh=True)
+
+            async def _write_capacity(writes: list[tuple[str, str]]) -> None:
+                await sa_client._write_metrics(cfg, writes)
+                sa_client.invalidate_rules_cache()
+
+            async def _pause_capacity() -> None:
+                await asyncio.sleep(CAPACITY_WRITE_PAUSE_S)
+
+            rules = await reconcile_inverter_capacity(
+                cfg,
+                rules,
+                read=_read_capacity,
+                write=_write_capacity,
+                sleep=_pause_capacity,
+                checked_at=ran_at,
+            )
+            overlay_live_capacity(cfg, rules)
         except Exception:
             log.exception("Inverter capacity setting check failed")
         # Floor to the scheduled :00/:15/:30/:45 tick before long OM/sim work so

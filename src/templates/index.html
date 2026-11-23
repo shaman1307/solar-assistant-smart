@@ -3001,7 +3001,7 @@
 
       <fieldset class="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
         <legend class="text-xs font-semibold text-gray-400 uppercase tracking-wider px-1">Inverter setting alarm</legend>
-        <p class="text-xs text-gray-500">Every 15 min, To grid battery capacity (%) and Back to battery capacity (%) are compared with the values saved in Simulation. If they differ, something changed the registers on the inverter: the pages turn pale pink and one email is sent.</p>
+        <p class="text-xs text-gray-500">Every 15 min, To grid battery capacity (%) and Back to battery capacity (%) are read from the inverter. If they differ from the values saved in Simulation, those saved values are written to the inverter up to 3 times, 30 seconds apart. A later read that already matches skips the next write. If the inverter differs again on the next quarter, or the 3 writes do not land, the pages turn pale pink and one email is sent. These fields show the inverter values. The plan uses the inverter values.</p>
         <div>
           <label class="text-xs text-gray-500 block mb-1">Alert email</label>
           <input name="alert_email" type="email" placeholder="you@example.com"
@@ -6110,6 +6110,9 @@ async function loadConfig() {
     const raw = await res.json();
     const meta = raw._template_meta || null;
     delete raw._template_meta;
+    capacitySaved = raw._capacity_saved || {};
+    delete raw._capacity_saved;
+    capacityDirty = {};
     configData = raw;
     populateForm(configData);
     renderTemplateSelectors(meta);
@@ -6721,6 +6724,19 @@ function removeForbidRange(btn) {
   renderForbidRanges(rows);
 }
 
+const CAPACITY_INPUTS = [
+  'inverter.to_grid_battery_capacity',
+  'inverter.back_to_battery_capacity',
+];
+let capacitySaved = {};
+let capacityDirty = {};
+
+function watchCapacityInput(el) {
+  if (el.dataset.capacityWatch) return;
+  el.dataset.capacityWatch = '1';
+  el.addEventListener('input', () => { capacityDirty[el.name] = true; });
+}
+
 function populateForm(cfg) {
   const SIM_DEFAULTS = {{ simulation_form_defaults | tojson }};
   const form = document.getElementById('cfg-form');
@@ -6728,6 +6744,7 @@ function populateForm(cfg) {
     const val = deepGet(cfg, el.name);
     if (val !== undefined && val !== null) el.value = val;
     else if (SIM_DEFAULTS[el.name] !== undefined) el.value = SIM_DEFAULTS[el.name];
+    if (CAPACITY_INPUTS.includes(el.name)) watchCapacityInput(el);
   });
   renderPvBlocks(cfg.solar?.blocks);
   renderForbidRanges(cfg.timer_schedule?.forbidden || []);
@@ -6748,6 +6765,12 @@ async function saveConfig(event) {
   form.querySelectorAll('[name]').forEach(el => {
     deepSet(updated, el.name, coerce(el.value, el.type));
   });
+  for (const name of CAPACITY_INPUTS) {
+    const key = name.split('.').pop();
+    if (!capacityDirty[name] && capacitySaved[key] != null && capacitySaved[key] !== '') {
+      deepSet(updated, name, Number(capacitySaved[key]));
+    }
+  }
   if (!updated.solar) updated.solar = {};
   updated.solar.blocks = getPvBlocksFromDom();
   delete updated.solar.horizon_masks;

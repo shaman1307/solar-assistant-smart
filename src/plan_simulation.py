@@ -453,10 +453,6 @@ async def _run_fresh_simulation(
     forecast, metrics, rules, rce_prices = await fetch_plan_inputs(
         cfg, invalidate=invalidate_inputs,
     )
-    inv = cfg.setdefault("inverter", {})
-    for key in ("to_grid_battery_capacity", "back_to_battery_capacity"):
-        if rules.get(key) is not None:
-            inv[key] = int(rules[key])
     sim = await asyncio.to_thread(
         run_simulation,
         forecast,

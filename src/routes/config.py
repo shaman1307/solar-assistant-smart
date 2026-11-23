@@ -105,6 +105,17 @@ async def api_get_config() -> dict[str, Any]:
     cfg.pop("_charge_rate_kw", None)
     cfg.pop("smart_mode_enabled", None)
     cfg.pop("smart_plus_enabled", None)
+    inv = cfg.setdefault("inverter", {})
+    saved = {
+        "to_grid_battery_capacity": inv.get("to_grid_battery_capacity"),
+        "back_to_battery_capacity": inv.get("back_to_battery_capacity"),
+    }
+    rules = await sa_client.get_rules(cfg, fresh=True)
+    if rules.get("sa_online"):
+        for key in saved:
+            if rules.get(key) is not None:
+                inv[key] = int(rules[key])
+    cfg["_capacity_saved"] = saved
     cfg["_template_meta"] = _template_meta_payload()
     return cfg
 
