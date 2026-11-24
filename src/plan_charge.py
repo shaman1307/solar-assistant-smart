@@ -509,8 +509,13 @@ def _supercharge_windows(
     cfg: dict[str, Any],
     today_date,
     skip_leading_slots: int | None = None,
+    include_leading_peak: bool = False,
 ) -> list[_SuperchargeWindow]:
-    """Smart+ sale need per morning offpeak window that already has grid charge.
+    """Smart+ sale need per morning offpeak window before a morning peak.
+
+    *include_leading_peak* adds a window for a horizon that starts inside a
+    peak block: its sale hours are counted from the first step and the
+    battery already holds the charge.
 
     Counted hours are the sale hours in the next 24h after that window's peak
     with mean RCE at or above grid.super_rce_min_pln_kwh, minus morning peaks a
@@ -567,20 +572,15 @@ def _supercharge_windows(
     offset = int(rce_step_offset)
     found: list[_SuperchargeWindow] = []
 
-    for start, peak in windows:
-        clock = dp_step_clock(
-            today_date, peak,
-            rce_step_offset=offset, slots_per_hour=slots,
-        )
-        if clock.hour >= 12 or get_g12_zone(clock, cfg) != "peak":
-            continue
-        charged = sum(
-            float(controls[step].grid_charge_kw)
-            for step in range(max(start, fill_from), peak)
-            if step < len(controls)
-        )
-        if charged <= eps_step:
-            continue
+    leading = include_leading_peak and scan_from > fill_from
+    for start, peak in ([(fill_from, fill_from)] if leading else []) + list(windows):
+        if not (leading and peak == fill_from):
+            clock = dp_step_clock(
+                today_date, peak,
+                rce_step_offset=offset, slots_per_hour=slots,
+            )
+            if clock.hour >= 12 or get_g12_zone(clock, cfg) != "peak":
+                continue
         counted = supercharge_counted_hours(
             end_hour=(offset + peak) // slots,
             rce_series=rce_series,
@@ -660,7 +660,7 @@ def apply_morning_supercharge(
     min_block_minutes: int | None = None,
     min_hourly_kwh: float = 0.0,
 ) -> list[HourControl]:
-    """Add Smart+ DC on a morning offpeak window that already has grid charge.
+    """Add Smart+ DC on a morning offpeak window before a morning peak.
 
     Extra DC is the largest shortfall over the window's deadlines (see
     `_supercharge_windows`), cut so SOC at the first counted hour stays at or
@@ -794,6 +794,7 @@ def relieve_supercharge_reserves(
         cfg=cfg,
         today_date=today_date,
         skip_leading_slots=skip_leading_slots,
+        include_leading_peak=True,
     ):
         soc_at = window.soc_at
         for deadline, shortfall in sorted(window.shortfalls.items()):

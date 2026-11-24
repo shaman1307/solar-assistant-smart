@@ -15,6 +15,7 @@ from .g12_pricing import get_buy_price
 from .grid_config import export_window_start_hour
 from .plan_cost import compute_plan_totals
 from .plan_q15 import (
+    _merge_smart_day_plans,
     collect_q15_schedule_rows,
     merge_today_hourly_profile,
     run_day_smart_q15_plan,
@@ -484,7 +485,7 @@ def build_energy_arbitrage_plan(
     )
     skip_export_hours = set(range(48)) - export_window_hours
 
-    smart_today, smart_tomorrow = run_horizon_smart_plans(
+    horizon_args = dict(
         today_str=today_str,
         tomorrow_str=tomorrow_str,
         pv_merged=pv_merged,
@@ -504,6 +505,7 @@ def build_energy_arbitrage_plan(
         epsilon=epsilon,
         skip_export_hours=skip_export_hours,
     )
+    smart_today, smart_tomorrow = run_horizon_smart_plans(**horizon_args)
 
     if 0 <= plan_from_hour < 24:
         pv_merged, load_merged = apply_current_hour_blend(
@@ -546,6 +548,22 @@ def build_energy_arbitrage_plan(
             from_hour=ov_from,
             rce_quarters=rce_today_full,
         )
+        # The last manual hour is the committed hour: later hours are re-planned
+        # from its end SOC with its Dis segments as the previous export end.
+        last_ov_hour = max(today_timer_ov)
+        last_ov_slots = (smart_today.get("q15_by_hour") or {}).get(last_ov_hour) or []
+        if last_ov_hour >= ov_from and last_ov_slots:
+            replanned_today, smart_tomorrow = run_horizon_smart_plans(**{
+                **horizon_args,
+                "committed_hour": {"timer_schedule": today_timer_ov[last_ov_hour]},
+                "committed_end_soc": float(last_ov_slots[-1]["soc_end"]),
+                "plan_from_hour": last_ov_hour,
+                "hour_steps": hour_steps - (last_ov_hour - plan_from_hour),
+            })
+            if replanned_today:
+                smart_today = _merge_smart_day_plans(
+                    smart_today, replanned_today, from_hour=last_ov_hour + 1, cfg=cfg,
+                )
 
     if smart_tomorrow and tomorrow_timer_ov:
         smart_tomorrow = apply_plan_timer_overrides_if_any(
