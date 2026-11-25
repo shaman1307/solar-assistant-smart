@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from .plan_charge import (
+    _supercharge_windows,
     apply_morning_supercharge,
     battery_grid_charge_step_ac,
     enforce_min_hourly_battery_grid_limits,
@@ -250,6 +251,42 @@ def optimize_horizon(
         today_date=today_date,
         skip_leading_slots=front_load_skip_leading_slots,
     )
+    # An active Smart+ window charges the battery for the later sale hours: the
+    # standard export does not sell inside it. Without counted sale hours the
+    # standard export plans every hour.
+    if cfg.get("smart_plus_enabled"):
+        slots = slots_per_hour_from_scale(step_scale)
+        windows = _supercharge_windows(
+            controls,
+            pv_series=pv_series,
+            load_series=load_series,
+            buy_prices=buy_prices,
+            offpeak_buy=dp.offpeak_buy,
+            initial_soc_kwh=initial_soc_kwh,
+            battery_cap=dp.battery_cap,
+            min_kwh=dp.min_kwh,
+            discharge_dc_step=dp.discharge_dc_step,
+            inverter_ac_step=dp.inverter_ac_step,
+            eta_grid=dp.eta_grid,
+            eta_out=dp.eta_out,
+            eta_pv_load=dp.eta_pv_load,
+            eta_pv_grid=dp.eta_pv_grid,
+            eta_pv_battery=dp.eta_pv_battery,
+            eps_step=dp.eps_step,
+            reserves=dp.reserves,
+            step_scale=step_scale,
+            rce_series=rce_series,
+            rce_step_offset=rce_step_offset,
+            export_window_start_hour=dp.window_start,
+            cfg=cfg,
+            today_date=today_date,
+            skip_leading_slots=front_load_skip_leading_slots,
+        )
+        skip_export_hours = set(skip_export_hours or ()) | {
+            (int(rce_step_offset) + step) // slots
+            for window in windows
+            for step in range(window.start, window.peak)
+        }
     controls = plan_battery_grid_export(
         controls,
         steps=steps,

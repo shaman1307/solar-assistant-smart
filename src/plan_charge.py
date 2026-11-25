@@ -473,7 +473,9 @@ class _SuperchargeWindow:
         deadlines: dict[int, int],
         soc_at: list[float],
         shortfalls: dict[int, float],
+        start: int = 0,
     ) -> None:
+        self.start = start
         self.peak = peak
         self.counted = counted
         self.starts = starts
@@ -619,6 +621,7 @@ def _supercharge_windows(
             spare = soc_at[deadline] - max(min_kwh, reserve)
             shortfalls[deadline] = due - spare
         found.append(_SuperchargeWindow(
+            start=start,
             peak=peak,
             counted=counted,
             starts={h: h * slots - offset for h in counted},
