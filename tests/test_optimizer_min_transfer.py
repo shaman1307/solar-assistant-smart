@@ -184,3 +184,10 @@ def test_no_grid_export_when_evening_soc_only_covers_night():
         slots = (plan.get("q15_by_hour") or {}).get(h) or []
         batt_grid = sum(float(s.get("battery_export_kwh") or 0) for s in slots)
         assert batt_grid < 0.05, f"hour {h}: unexpected grid export {batt_grid}"
+
+def test_min_window_gap_minutes_is_a_timer_schedule_setting():
+    from src.simulation_config import plan_timer_min_window_gap_minutes
+
+    assert plan_timer_min_window_gap_minutes({}) == 30
+    assert plan_timer_min_window_gap_minutes({"timer_schedule": {"min_window_gap_minutes": 45}}) == 45
+    assert plan_timer_min_window_gap_minutes({"timer_schedule": {"min_window_gap_minutes": 0}}) == 0

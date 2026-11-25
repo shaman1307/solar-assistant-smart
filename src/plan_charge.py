@@ -723,7 +723,8 @@ def apply_morning_supercharge(
         idx = min(peak - 1, len(targets) - 1)
         if idx < 0:
             continue
-        targets[idx] = min(float(battery_cap), float(targets[idx]) + extra_dc)
+        base = max(float(targets[idx]), float(window.soc_at[peak]))
+        targets[idx] = min(float(battery_cap), base + extra_dc)
         out = plan_battery_grid_charge(
             out,
             **sim,

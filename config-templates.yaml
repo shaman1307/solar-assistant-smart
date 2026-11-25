@@ -51,6 +51,7 @@ templates:
         pv_to_load: 7.5
     timer_schedule:
       min_block_minutes: 30
+      min_window_gap_minutes: 30
       min_hourly_transfer_kwh: 2.0
     grid:
       feed_in_price_pln: 0.2

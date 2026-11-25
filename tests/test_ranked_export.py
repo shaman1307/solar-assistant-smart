@@ -786,6 +786,7 @@ def test_floor_ignores_load_only_quarters_outside_export_span():
         eta_pv_battery=0.925,
         eps_step=0.01,
         min_hourly_kwh=2.0,
+        min_gap_minutes=30,
     )
     assert claim is None
 

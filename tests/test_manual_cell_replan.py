@@ -307,3 +307,162 @@ def test_smart_plus_active_night_window_holds_the_charge_for_the_evening_sale():
         float(s.get("grid_export") or 0.0) for h in (15, 16, 17) for s in by_hour.get(h) or []
     )
     assert evening > 15.0, evening
+
+
+def test_smart_plus_quarter_replans_keep_the_night_charge_that_fills_the_battery_by_the_sale():
+    """Every re-plan inside the night window charges up to the same 95% at the sale start."""
+    rce = list(NOV17_RCE)
+    for hour in (15, 16, 17, 18, 19):
+        rce[hour] = 2.5
+    soc_by_start = {0: 20.0, 2: 40.0, 3: 50.0, 4: 60.0, 5: 70.0}
+    for start_hour, soc_pct in soc_by_start.items():
+        plan = run_day_smart_q15_plan(
+            date_str=TODAY,
+            pv_hourly=NOV17_PV,
+            load_hourly=NOV17_LOAD,
+            tomorrow_pv=NOV18_PV,
+            tomorrow_load=NOV18_LOAD,
+            cfg=_live_cfg(smart_plus=True),
+            rce_quarters=_quarters(rce),
+            initial_soc_kwh=soc_pct / 100.0 * 47.6,
+            from_hour=start_hour,
+            front_load_skip_leading_slots=0,
+        )
+        by_hour = plan["q15_by_hour"]
+        assert abs(_end_soc_pct(by_hour[5]) - 79.9) < 1.0, (start_hour, _end_soc_pct(by_hour[5]))
+        assert _end_soc_pct(by_hour[14]) >= 94.0, (start_hour, _end_soc_pct(by_hour[14]))
+
+
+# Yesterday night: 20% at midnight, the plan reaches 87% at 15:00; a manual
+# "Chg 14:00-15:00 cap100%" is set between 00:00 and 01:00.
+NIGHT_START_SOC_PCT = 20.0
+NIGHT_HOURS = range(0, 6)
+NIGHT_RUN_TIMES = [(0, 0), (0, 45), (1, 11), (1, 45), (2, 45), (3, 45), (4, 45), (5, 0)]
+NIGHT_MANUAL_FROM = (0, 31)
+
+
+def _night_run(now: datetime, stored: dict | None, *, manual: bool) -> dict:
+    """One plan job at *now* with the SOC the previous plan left (empty meters)."""
+    cfg = _live_cfg(smart_plus=True)
+    if manual:
+        cfg["plan_overrides"] = {"timer_schedule": {TODAY: {"14": MANUAL_CHARGE}}}
+    soc_by_hour = [NIGHT_START_SOC_PCT] * 24
+    live_soc = NIGHT_START_SOC_PCT
+    if stored is not None:
+        rows = _today_rows({"rows": stored["history_rows"] + stored["rows"]})
+        for hour in range(now.hour):
+            soc_by_hour[hour] = float(rows[hour]["soc"])
+        quarter = now.minute // 15
+        if quarter:
+            live_soc = float(rows[now.hour]["q15"][quarter - 1]["soc"])
+        elif now.hour:
+            live_soc = float(rows[now.hour - 1]["soc"])
+    forecast = {
+        "today": {
+            "pv": NOV17_PV, "load": NOV17_LOAD,
+            "pv_forecast": NOV17_PV, "load_forecast": NOV17_LOAD,
+            "pv_total": sum(NOV17_PV), "load_total": sum(NOV17_LOAD),
+        },
+        "tomorrow": {
+            "pv": NOV18_PV, "load": NOV18_LOAD,
+            "pv_total": sum(NOV18_PV), "load_total": sum(NOV18_LOAD),
+        },
+        "meta": {},
+    }
+    meters = {k: [0.0] * 24 for k in (
+        "pv", "load", "bat_charge", "bat_discharge", "grid_buy", "grid_sell",
+    )}
+    metrics = {
+        "battery_soc": live_soc,
+        "today_hourly": {**meters, "soc": soc_by_hour},
+        "series_10min": None,
+    }
+    rce = _rce_with_sale_block()
+    for hour in NIGHT_HOURS:
+        rce[hour] = 1.15
+    rce_q = {TODAY: _quarters(rce), TOMORROW: [None] * 96}
+    with (
+        patch("src.simulation._now_warsaw", return_value=now),
+        patch("src.sqlite_store.read_plan", return_value=stored),
+        patch("src.simulation.quarter_rce_for_dates", return_value=rce_q),
+    ):
+        plan = build_energy_arbitrage_plan(forecast, metrics, {}, cfg)
+    return {
+        "today_date": TODAY,
+        "plan_from_hour": now.hour,
+        "rows": plan["rows"],
+        "history_rows": plan.get("history_rows") or [],
+    }
+
+
+def _night_timeline() -> dict:
+    """Run the plan jobs of the night; return the windows each job showed.
+
+    ``shown[(h, m)]`` maps the night hours the job plans to their Timer Schedule;
+    ``written[h]`` is the window that was committed when hour *h* began.
+    """
+    stored = None
+    shown: dict[tuple[int, int], dict[int, str]] = {}
+    written: dict[int, str] = {}
+    soc_15: dict[tuple[int, int], float] = {}
+    for hour, minute in NIGHT_RUN_TIMES:
+        now = datetime(2026, 11, 17, hour, minute, tzinfo=ZoneInfo("Europe/Warsaw"))
+        stored = _night_run(now, stored, manual=(hour, minute) >= NIGHT_MANUAL_FROM)
+        rows = _today_rows({"rows": stored["history_rows"] + stored["rows"]})
+        shown[(hour, minute)] = {
+            h: rows[h]["timer_schedule"] for h in NIGHT_HOURS
+            if h >= hour and rows[h].get("timer_schedule")
+        }
+        soc_15[(hour, minute)] = float(rows[14]["soc"])
+        if minute == 45 and hour + 1 in NIGHT_HOURS:
+            written[hour + 1] = rows[hour + 1].get("timer_schedule") or ""
+        if minute == 0 and hour in NIGHT_HOURS:
+            written.setdefault(hour, rows[hour].get("timer_schedule") or "")
+    return {"shown": shown, "written": written, "soc_15": soc_15}
+
+
+FULL_NIGHT = {
+    1: "Chg 01:00-02:00 5.8kW",
+    2: "Chg 02:00-03:00 5.8kW",
+    3: "Chg 03:00-04:00 5.8kW",
+    4: "Chg 04:00-05:00 5.8kW",
+    5: "Chg 05:00-06:00 5.8kW",
+}
+
+
+def _windows(by_hour: dict[int, str]) -> dict[int, str]:
+    """Timer Schedule per hour without the stop-SOC cap."""
+    return {hour: timer.rsplit(" cap", 1)[0] for hour, timer in by_hour.items()}
+
+
+def test_manual_charge_cell_keeps_the_whole_night_charge_at_every_replan():
+    """20% at midnight, 87% planned at 15:00, manual Chg 14-15 added before 01:00.
+
+    The night windows seen at 00:00, 01:11 and 05:00 are the same five full
+    5.8 kW hours, and the SOC planned at 15:00 stays above the manual cell's start.
+    """
+    timeline = _night_timeline()
+    shown = timeline["shown"]
+    assert _windows(shown[(0, 0)]) == FULL_NIGHT
+    assert _windows(shown[(1, 11)]) == FULL_NIGHT
+    assert _windows(shown[(5, 0)]) == {5: FULL_NIGHT[5]}
+    assert 86.0 <= timeline["soc_15"][(0, 0)] <= 88.0
+    assert timeline["soc_15"][(0, 45)] >= 97.0
+    for run_time, soc_pct in timeline["soc_15"].items():
+        if run_time >= (0, 45):
+            assert soc_pct >= 96.5, (run_time, soc_pct)
+    for run_time, planned in shown.items():
+        later = {h: w for h, w in FULL_NIGHT.items() if h >= run_time[0]}
+        assert _windows(planned) == later, (run_time, planned)
+    assert _windows({h: t for h, t in timeline["written"].items() if t}) == FULL_NIGHT
+
+
+def test_night_windows_written_hour_by_hour_have_no_gap_shorter_than_min_block():
+    written = _night_timeline()["written"]
+    spans = []
+    for hour in sorted(written):
+        for part in (p for p in written[hour].split("|") if p.strip().startswith("Chg")):
+            start, end = part.split()[1].split("-")
+            spans.append((int(start[:2]) * 60 + int(start[3:]), int(end[:2]) * 60 + int(end[3:])))
+    gaps = [b[0] - a[1] for a, b in zip(spans, spans[1:])]
+    assert gaps and all(gap == 0 or gap >= 30 for gap in gaps), spans

@@ -19,6 +19,7 @@ from .plan_reserve import (
     HOURS_PER_DAY,
     morning_cover_bound_from_hour_buys,
 )
+from .simulation_config import plan_timer_min_window_gap_minutes
 
 
 @dataclass(frozen=True)
@@ -779,6 +780,7 @@ def plan_hour_battery_grid_export_claim(
     eta_pv_battery: float,
     eps_step: float,
     min_hourly_kwh: float,
+    min_gap_minutes: int,
     prev_export_end_min: int | None = None,
     next_export_start_min: int | None = None,
 ) -> BatteryGridExportHourClaim | None:
@@ -793,8 +795,8 @@ def plan_hour_battery_grid_export_claim(
     *prev_export_end_min* is the minute-of-day when the previous Dis window
     ended. *next_export_start_min* is when the following Dis window starts
     (a middle hour of the run, fixed at :00). This window starts on the
-    previous end, or at least 30 minutes later, and ends on the next start
-    or at least 30 minutes earlier.
+    previous end, or at least *min_gap_minutes* later, and ends on the next
+    start or at least *min_gap_minutes* earlier.
     """
     prices = list(rce_q) if rce_q is not None else [None, None, None, None]
     while len(prices) < 4:
@@ -818,11 +820,11 @@ def plan_hour_battery_grid_export_claim(
         end_min = int(hour) * 60 + int(span[1]) * 15
         if prev_export_end_min is not None:
             gap = start_min - int(prev_export_end_min)
-            if gap < 0 or 0 < gap < 30:
+            if gap < 0 or 0 < gap < min_gap_minutes:
                 return True
         if next_export_start_min is not None:
             gap = int(next_export_start_min) - end_min
-            if gap < 0 or 0 < gap < 30:
+            if gap < 0 or 0 < gap < min_gap_minutes:
                 return True
         return False
 
@@ -1054,6 +1056,7 @@ def plan_battery_grid_export(
         eta_grid=eta_grid, eta_out=eta_out, eta_pv_load=eta_pv_load,
         eta_pv_grid=eta_pv_grid, eta_pv_battery=eta_pv_battery,
         eps_step=eps_step, min_hourly_kwh=min_hourly_kwh,
+        min_gap_minutes=plan_timer_min_window_gap_minutes(cfg or {}),
     )
 
     # Fill each start-hour→morning window in clock order. Seed the richest

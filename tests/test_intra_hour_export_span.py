@@ -24,6 +24,7 @@ def _claim_kwargs(**extra):
         eta_pv_battery=0.95,
         eps_step=0.01,
         min_hourly_kwh=2.0,
+        min_gap_minutes=30,
         hold_soc_kwh=0.0,
         hour_end_floor_kwh=8.64,
         reserve_q=[8.64, 8.64, 8.64, 8.64],

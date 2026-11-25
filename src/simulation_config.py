@@ -33,6 +33,8 @@ DEFAULT_SIMULATION: dict[str, Any] = {
 
 DEFAULT_TIMER_SCHEDULE: dict[str, Any] = {
     "min_block_minutes": 30,
+    # Neighbouring charge or discharge windows touch or sit at least this many minutes apart.
+    "min_window_gap_minutes": 30,
     # Minimum hourly battery charge (import) / discharge (export) in kWh — smart Bat Charge/Discharge.
     "min_hourly_transfer_kwh": 2.0,
 }
@@ -109,6 +111,7 @@ def simulation_form_defaults() -> dict[str, float | int]:
         "simulation.losses_pct.pv_to_grid": float(losses["pv_to_grid"]),
         "simulation.losses_pct.pv_to_load": float(losses["pv_to_load"]),
         "timer_schedule.min_block_minutes": int(DEFAULT_TIMER_SCHEDULE["min_block_minutes"]),
+        "timer_schedule.min_window_gap_minutes": int(DEFAULT_TIMER_SCHEDULE["min_window_gap_minutes"]),
         "timer_schedule.min_hourly_transfer_kwh": float(
             DEFAULT_TIMER_SCHEDULE["min_hourly_transfer_kwh"]
         ),
@@ -148,14 +151,21 @@ def get_timer_schedule_params(cfg: dict[str, Any]) -> dict[str, float | int]:
     if min_block % 15 != 0:
         min_block = max(15, (min_block // 15) * 15)
     min_hourly = float(ts.get("min_hourly_transfer_kwh", DEFAULT_TIMER_SCHEDULE["min_hourly_transfer_kwh"]))
+    min_gap = int(ts.get("min_window_gap_minutes", DEFAULT_TIMER_SCHEDULE["min_window_gap_minutes"]))
+    min_gap = max(0, min(60, min_gap))
     return {
         "min_block_minutes": min_block,
+        "min_window_gap_minutes": min_gap,
         "min_hourly_transfer_kwh": max(0.0, min_hourly),
     }
 
 
 def plan_timer_min_block_minutes(cfg: dict[str, Any]) -> int:
     return int(get_timer_schedule_params(cfg)["min_block_minutes"])
+
+
+def plan_timer_min_window_gap_minutes(cfg: dict[str, Any]) -> int:
+    return int(get_timer_schedule_params(cfg)["min_window_gap_minutes"])
 
 
 def plan_timer_min_hourly_transfer_kwh(cfg: dict[str, Any]) -> float:
