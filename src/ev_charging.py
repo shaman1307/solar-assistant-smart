@@ -22,19 +22,13 @@ HISTORY_RETENTION_DAYS = 35
 
 _STORE_PATH = BASE_DIR / "data" / "ev_charging.json"
 
-DEFAULT_SLOT = {
-    "enabled": False,
-    "start": "11:00",
-    "end": "16:00",
-    "power_kw": 5.0,
+# UI order. An end of 00:00 after a later start is the end of the same day (24:00).
+SLOT_DEFAULTS: dict[str, dict[str, Any]] = {
+    "night": {"enabled": False, "start": "00:00", "end": "04:00", "power_kw": 5.0},
+    "extra": {"enabled": False, "start": "13:00", "end": "15:00", "power_kw": 5.0},
+    "day": {"enabled": False, "start": "22:00", "end": "00:00", "power_kw": 5.0},
 }
-
-DEFAULT_NIGHT_SLOT = {
-    "enabled": False,
-    "start": "02:00",
-    "end": "07:00",
-    "power_kw": 8.0,
-}
+SLOT_KEYS = tuple(SLOT_DEFAULTS)
 
 
 def store_path() -> Path:
@@ -42,10 +36,7 @@ def store_path() -> Path:
 
 
 def default_session() -> dict[str, Any]:
-    return {
-        "day": {**DEFAULT_SLOT},
-        "night": {**DEFAULT_NIGHT_SLOT},
-    }
+    return {key: {**SLOT_DEFAULTS[key]} for key in SLOT_KEYS}
 
 
 def load_store() -> dict[str, Any]:
@@ -87,24 +78,108 @@ def parse_hhmm(value: str) -> int | None:
 
 
 def format_hhmm(total_min: int) -> str:
-    """Clock time HH:MM on a 24h calendar day."""
-    clamped = max(0, min(23 * 60 + 59, int(total_min)))
-    return f"{clamped // 60:02d}:{clamped % 60:02d}"
+    """Clock time HH:MM on a 24h calendar day (1440 → 00:00)."""
+    wrapped = max(0, int(total_min)) % MINUTES_PER_DAY
+    return f"{wrapped // 60:02d}:{wrapped % 60:02d}"
 
 
 Q15_STEP_MIN = 15
-_MAX_END_MIN = 23 * 60 + 45  # aligned with UI time inputs (step=900)
+MINUTES_PER_DAY = 24 * 60
+
+
+def slot_end_minutes(start_min: int, end_min: int) -> int:
+    """End as minutes since 00:00; a 00:00 end after a later start is 24:00."""
+    if end_min == 0 and start_min > 0:
+        return MINUTES_PER_DAY
+    return end_min
 
 
 def _coerce_slot_end_after_start(start_min: int, end_min: int) -> int:
-    """Minimum valid end: strictly after start, 15-minute grid."""
+    """Minimum valid end: strictly after start, 15-minute grid, at most 24:00."""
     if end_min > start_min:
         return end_min
-    return min(start_min + Q15_STEP_MIN, _MAX_END_MIN)
+    return min(start_min + Q15_STEP_MIN, MINUTES_PER_DAY)
 
 
-def _normalize_slot(raw: dict | None, *, night: bool, cfg: dict) -> dict[str, Any]:
-    defaults = DEFAULT_NIGHT_SLOT if night else DEFAULT_SLOT
+def _snap_up(minute: int) -> int:
+    step = Q15_STEP_MIN
+    return ((int(minute) + step - 1) // step) * step
+
+
+def _snap_down(minute: int) -> int:
+    return (int(minute) // Q15_STEP_MIN) * Q15_STEP_MIN
+
+
+def slot_interval(start: str, end: str) -> tuple[int, int]:
+    """Half-open [start, end) minutes. A 00:00 end after a later start is 24:00."""
+    start_min = parse_hhmm(start)
+    end_min = parse_hhmm(end)
+    if start_min is None or end_min is None:
+        return 0, Q15_STEP_MIN
+    end_min = _coerce_slot_end_after_start(start_min, slot_end_minutes(start_min, end_min))
+    return start_min, end_min
+
+
+def _intervals_conflict(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    """True when one slot reaches the 15-minute step of the other.
+
+    A slot ending at 04:00 blocks the next one through 04:00; the next grid
+    time is 04:15. A 00:00 end (24:00) does not meet a 00:00 start.
+    """
+    a0, a1 = a
+    b0, b1 = b
+    return a0 < b1 + Q15_STEP_MIN and b0 < a1 + Q15_STEP_MIN
+
+
+def separate_edited_slot(session: dict[str, Any], edited_key: str, side: str) -> dict[str, Any]:
+    """Move the edited slot off the other two. Other slots stay put."""
+    if edited_key not in SLOT_KEYS or side not in ("start", "end"):
+        return session
+    intervals = {
+        key: slot_interval(session[key]["start"], session[key]["end"])
+        for key in SLOT_KEYS
+        if key in session
+    }
+    if edited_key not in intervals:
+        return session
+    me0, me1 = intervals[edited_key]
+    for _ in range(6):
+        moved = False
+        for key, (o0, o1) in intervals.items():
+            if key == edited_key or not _intervals_conflict((me0, me1), (o0, o1)):
+                continue
+            if side == "end" and me0 < o0:
+                new_end = _snap_down(o0 - 1)
+                if new_end <= me0:
+                    new_end = min(me0 + Q15_STEP_MIN, MINUTES_PER_DAY)
+                if new_end != me1:
+                    me1 = new_end
+                    moved = True
+            elif me0 < o1 + Q15_STEP_MIN and me0 + Q15_STEP_MIN > o0:
+                new_start = min(_snap_up(o1 + 1), MINUTES_PER_DAY - Q15_STEP_MIN)
+                if new_start != me0:
+                    me0 = new_start
+                    moved = True
+            if me1 + Q15_STEP_MIN > o0 and me0 < o0:
+                new_end = _snap_down(o0 - 1)
+                if new_end != me1:
+                    me1 = new_end
+                    moved = True
+            if me1 <= me0:
+                me1 = min(me0 + Q15_STEP_MIN, MINUTES_PER_DAY)
+                moved = True
+            if me1 > MINUTES_PER_DAY:
+                me1 = MINUTES_PER_DAY
+                moved = True
+        if not moved:
+            break
+    session[edited_key]["start"] = format_hhmm(me0)
+    session[edited_key]["end"] = format_hhmm(me1)
+    return session
+
+
+def _normalize_slot(raw: dict | None, *, key: str, cfg: dict) -> dict[str, Any]:
+    defaults = SLOT_DEFAULTS[key]
     src = raw if isinstance(raw, dict) else {}
     start = str(src.get("start") or defaults["start"])
     end = str(src.get("end") or defaults["end"])
@@ -115,6 +190,7 @@ def _normalize_slot(raw: dict | None, *, night: bool, cfg: dict) -> dict[str, An
     start_min = parse_hhmm(start)
     end_min = parse_hhmm(end)
     if start_min is not None and end_min is not None:
+        end_min = slot_end_minutes(start_min, end_min)
         coerced_end = _coerce_slot_end_after_start(start_min, end_min)
         if coerced_end != end_min:
             end_min = coerced_end
@@ -138,15 +214,13 @@ def _normalize_slot(raw: dict | None, *, night: bool, cfg: dict) -> dict[str, An
 
 def normalize_session(raw: dict | None, cfg: dict) -> dict[str, Any]:
     src = raw if isinstance(raw, dict) else {}
-    day = _normalize_slot(src.get("day"), night=False, cfg=cfg)
-    night = _normalize_slot(src.get("night"), night=True, cfg=cfg)
-    return {"day": day, "night": night}
+    return {key: _normalize_slot(src.get(key), key=key, cfg=cfg) for key in SLOT_KEYS}
 
 
 def session_has_charging(session: dict[str, Any] | None) -> bool:
     if not session:
         return False
-    for key in ("day", "night"):
+    for key in SLOT_KEYS:
         slot = session.get(key) or {}
         if slot.get("enabled") and float(slot.get("power_kw") or 0) > 0:
             return True
@@ -199,7 +273,7 @@ def _do_one_rollover(data: dict[str, Any], cfg: dict, anchor_date_str: str) -> s
 
 
 def _load_store_ready(cfg: dict, *, now: datetime | None = None) -> dict[str, Any]:
-    """Load store, migrate v1, catch up missed nightly rollovers."""
+    """Load store, migrate v1, roll over once per calendar day change (00:00 Warsaw)."""
     now = now or now_warsaw()
     today_str, _ = _calendar_pair(now)
     data = load_store()
@@ -322,7 +396,8 @@ def build_ev_q15(session: dict[str, Any] | None) -> list[float]:
     if not session:
         return [0.0] * Q15_PER_DAY
     total = [0.0] * Q15_PER_DAY
-    for key, default in (("day", DEFAULT_SLOT), ("night", DEFAULT_NIGHT_SLOT)):
+    for key in SLOT_KEYS:
+        default = SLOT_DEFAULTS[key]
         slot = session.get(key) or {}
         if not slot.get("enabled"):
             continue
@@ -331,7 +406,10 @@ def build_ev_q15(session: dict[str, Any] | None) -> list[float]:
             continue
         start = parse_hhmm(str(slot.get("start") or default["start"]))
         end = parse_hhmm(str(slot.get("end") or default["end"]))
-        if start is None or end is None or end <= start:
+        if start is None or end is None:
+            continue
+        end = slot_end_minutes(start, end)
+        if end <= start:
             continue
         slot_q15 = _slot_q15_energy(start, end, power)
         total = [round(a + b, 6) for a, b in zip(total, slot_q15)]
@@ -365,24 +443,6 @@ def prune_old_sessions(cfg: dict) -> None:
         save_store(data)
 
 
-def nightly_rollover(cfg: dict, *, now: datetime | None = None) -> str:
-    """At 23:59: relative today ← tomorrow; tomorrow cleared; anchor → next day."""
-    now = now or now_warsaw()
-    today_str, _ = _calendar_pair(now)
-    data = _load_store_ready(cfg, now=now)
-    if str(data.get("anchor_date") or today_str) != today_str:
-        data["anchor_date"] = today_str
-    next_anchor = _do_one_rollover(data, cfg, today_str)
-    save_store(data)
-    prune_old_sessions(cfg)
-    log.info(
-        "EV charging rolled over at %s — anchor now %s",
-        today_str,
-        next_anchor,
-    )
-    return next_anchor
-
-
 def api_payload(cfg: dict) -> dict[str, Any]:
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -403,9 +463,10 @@ def api_payload(cfg: dict) -> dict[str, Any]:
 def apply_session_update(
     *,
     date_str: str,
-    day: dict | None,
-    night: dict | None,
+    slots: dict[str, dict | None],
     cfg: dict,
+    edited_slot: str | None = None,
+    edited_side: str | None = None,
 ) -> dict[str, Any]:
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -413,8 +474,10 @@ def apply_session_update(
         raise ValueError("EV charging can only be set for today or tomorrow")
     current = get_session_for_ui(date_str, cfg)
     merged = deepcopy(current)
-    if day is not None:
-        merged["day"] = {**merged["day"], **day}
-    if night is not None:
-        merged["night"] = {**merged["night"], **night}
+    for key in SLOT_KEYS:
+        update = slots.get(key)
+        if update is not None:
+            merged[key] = {**merged[key], **update}
+    if edited_slot in SLOT_KEYS and edited_side in ("start", "end"):
+        separate_edited_slot(merged, edited_slot, edited_side)
     return set_session(date_str, merged, cfg)

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .config import BASE_DIR, load_config, save_config
+from .config import BASE_DIR, load_config
 from .json_store import atomic_json_save, load_json
 from . import ev_charging as ev
 from .influxdb import get_load_kwh_10min_for_date_sync, now_warsaw
@@ -176,33 +176,17 @@ def _set_metric_effective(metric: dict[str, Any], hourly: list[float], q15: list
     metric["total_effective"] = total
 
 
-def _scale_metric(metric: dict[str, Any], target_total: float | None) -> None:
-    base_total = float(metric.get("total_base") or 0.0)
-    if target_total is None or base_total <= 0.0:
-        metric["effective_q15"] = list(metric.get("base_q15") or [])
-        metric["effective_hourly"] = list(metric.get("base_hourly") or [])
-        metric["total_effective"] = base_total
-        return
-    scale = float(target_total) / base_total
-    metric["effective_q15"] = [round(v * scale, 6) for v in metric["base_q15"]]
-    metric["effective_hourly"] = [round(v * scale, 3) for v in metric["base_hourly"]]
-    metric["total_effective"] = round(target_total, 2)
+def _reset_metric_to_base(metric: dict[str, Any]) -> None:
+    """Set effective PV series to the base series."""
+    metric["effective_q15"] = list(metric.get("base_q15") or [])
+    metric["effective_hourly"] = list(metric.get("base_hourly") or [])
+    metric["total_effective"] = float(metric.get("total_base") or 0.0)
 
 
-def _apply_load_effective(
-    metric: dict[str, Any],
-    override_base_total: float | None,
-    ev_q15: list[float],
-) -> None:
-    """Scale base load only (override slider); add EV energy on top."""
+def _apply_load_effective(metric: dict[str, Any], ev_q15: list[float]) -> None:
+    """Effective load = base load + EV energy."""
     base_q15 = list(metric.get("base_q15") or [0.0] * Q15_PER_DAY)
-    base_total = float(metric.get("total_base") or 0.0)
-    if override_base_total is None or base_total <= 0.0:
-        scaled_q15 = list(base_q15)
-    else:
-        scale = float(override_base_total) / base_total
-        scaled_q15 = [round(v * scale, 6) for v in base_q15]
-    effective_q15 = [round(a + b, 6) for a, b in zip(scaled_q15, ev_q15)]
+    effective_q15 = [round(a + b, 6) for a, b in zip(base_q15, ev_q15)]
     metric["effective_q15"] = effective_q15
     metric["effective_hourly"] = q15_to_hourly(effective_q15)
     metric["total_effective"] = round(sum(metric["effective_hourly"]), 2)
@@ -260,7 +244,6 @@ def day_forecast_snapshot(date_str: str) -> dict[str, Any] | None:
     load = day.get("load") or {}
     return {
         "pv_q15": list(pv.get("effective_q15") or []),
-        "pv_pre_intraday_q15": list(pv.get("pre_intraday_q15") or []),
         "load_q15": list(load.get("effective_q15") or []),
         "pv_radiation": pv.get("radiation"),
     }
@@ -329,7 +312,7 @@ def refresh_intraday_pv(cfg: dict, *, now: datetime | None = None) -> dict[str, 
 
 
 def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, Any]:
-    """Compute base Load+PV for tomorrow and day-after; reset overrides in config."""
+    """Compute base Load+PV for tomorrow and day-after."""
     now = now or now_warsaw()
     d1 = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     d2 = (now + timedelta(days=2)).strftime("%Y-%m-%d")
@@ -346,11 +329,6 @@ def build_nightly_cache(cfg: dict, *, now: datetime | None = None) -> dict[str, 
 
     save_day_cache(cache)
 
-    overrides = cfg.setdefault("overrides", {})
-    for key in ("today_pv_kwh", "today_load_kwh", "tomorrow_pv_kwh", "tomorrow_load_kwh"):
-        overrides[key] = None
-    save_config(cfg)
-    ev.nightly_rollover(cfg, now=now)
     log.info("Nightly forecast cache saved for %s, %s, %s", today_str, d1, d2)
     return cache
 
@@ -376,8 +354,8 @@ def ensure_cache_days(cfg: dict, dates: list[str]) -> dict[str, Any]:
     return cache
 
 
-def apply_overrides_to_cache(cfg: dict) -> dict[str, Any]:
-    """Scale effective Load/PV in file cache from sa-config overrides + EV plans."""
+def refresh_effective_forecast(cfg: dict) -> dict[str, Any]:
+    """Recompute effective Load/PV in file cache from base profiles + EV plans."""
     today_str = now_warsaw().strftime("%Y-%m-%d")
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
     return refresh_effective_metrics(cfg, [today_str, tomorrow_str])
@@ -389,8 +367,6 @@ def _apply_intraday_pv_scale(cfg: dict, date_str: str, metric: dict[str, Any]) -
 
     now = now_warsaw()
     slot = (now.hour * 60 + now.minute) // 15
-    # Effective PV after the slider, before the intraday scale (basis of the no-shading series).
-    metric["pre_intraday_q15"] = list(metric.get("effective_q15") or [])
     try:
         q15, scale = intraday_scaled_pv_q15(
             cfg, metric.get("radiation"), date_str, list(metric.get("effective_q15") or []), slot,
@@ -409,16 +385,6 @@ def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
     tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
     cache = ensure_cache_days(cfg, dates)
     days = cache["days"]
-    overrides: dict = cfg.get("overrides", {})
-
-    load_keys = {
-        today_str: "today_load_kwh",
-        tomorrow_str: "tomorrow_load_kwh",
-    }
-    pv_keys = {
-        today_str: "today_pv_kwh",
-        tomorrow_str: "tomorrow_pv_kwh",
-    }
 
     for date_str in dates:
         if date_str not in days:
@@ -429,16 +395,12 @@ def refresh_effective_metrics(cfg: dict, dates: list[str]) -> dict[str, Any]:
             load_q15, load_hourly = compute_weekday_load_profile(date_str, cfg)
             _set_metric_effective(load_metric, load_hourly, load_q15)
             load_metric["base_source"] = "weekday_samples_trimmed_v1"
-        val = overrides.get(load_keys.get(date_str, ""))
-        target = float(val) if val is not None else None
         session = ev.session_for_load_add(date_str, today_str, tomorrow_str, cfg)
         ev_q15 = ev.build_ev_q15(session)
-        _apply_load_effective(load_metric, target, ev_q15)
+        _apply_load_effective(load_metric, ev_q15)
 
         pv_metric = days[date_str]["pv"]
-        pval = overrides.get(pv_keys.get(date_str, ""))
-        ptarget = float(pval) if pval is not None else None
-        _scale_metric(pv_metric, ptarget)
+        _reset_metric_to_base(pv_metric)
         if date_str == today_str:
             _apply_intraday_pv_scale(cfg, date_str, pv_metric)
 
@@ -510,18 +472,4 @@ def ten_min_kw_to_q15_kw(ten_min_kw: list[float | None]) -> list[float | None]:
                 weight += overlap
         if weight > 0:
             out[j] = round(weighted_sum / weight, 3)
-    return out
-
-
-def baseline_totals(cfg: dict) -> dict[str, dict[str, float]]:
-    today_str = now_warsaw().strftime("%Y-%m-%d")
-    tomorrow_str = (now_warsaw() + timedelta(days=1)).strftime("%Y-%m-%d")
-    cache = ensure_cache_days(cfg, [today_str, tomorrow_str])
-    out: dict[str, dict[str, float]] = {}
-    for label, date_str in (("today", today_str), ("tomorrow", tomorrow_str)):
-        day = cache["days"].get(date_str) or _empty_day()
-        out[label] = {
-            "pv_kwh": float(day["pv"].get("total_base") or 0.0),
-            "load_kwh": float(day["load"].get("total_base") or 0.0),
-        }
     return out

@@ -1,4 +1,4 @@
-"""Forecast Overrides must rebuild Energy arbitrage (plan + solid SOC unlock)."""
+"""Power Management Refresh and EV load must rebuild Energy arbitrage (plan + solid SOC unlock)."""
 
 from __future__ import annotations
 
@@ -6,97 +6,11 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from src.plan_simulation import get_simulation_for_date
-from src.routes import config as config_routes
 from src.routes import data as data_routes
 
 
-def test_api_save_overrides_rebuilds_energy_arbitrage_with_soc_unlock():
-    """POST /api/overrides must refresh EA with unlock_plan_soc=True.
-
-    Without unlock, solid SOC stays frozen and the Energy arbitrage table can
-    keep a stale plan after Forecast Overrides change.
-    """
-    cfg: dict = {
-        "battery": {"capacity_kwh": 48},
-        "overrides": {
-            "today_pv_kwh": None,
-            "today_load_kwh": None,
-            "tomorrow_pv_kwh": None,
-            "tomorrow_load_kwh": None,
-        },
-    }
-    refresh = AsyncMock(return_value={"rows": [], "computed_at": "x"})
-    cache = AsyncMock(return_value={})
-
-    with (
-        patch.object(config_routes, "load_config", return_value=cfg),
-        patch.object(config_routes, "save_config") as save_cfg,
-        patch.object(config_routes.forecast_mod, "apply_overrides_to_cache", cache),
-        patch.object(config_routes, "hourly_plan_refresh", refresh),
-    ):
-        result = asyncio.run(
-            config_routes.api_save_overrides({
-                "today_pv_kwh": 42.5,
-                "today_load_kwh": 18.0,
-                "tomorrow_pv_kwh": None,
-                "tomorrow_load_kwh": 12.0,
-            })
-        )
-
-    assert result == {"status": "saved"}
-    assert cfg["overrides"]["today_pv_kwh"] == 42.5
-    assert cfg["overrides"]["today_load_kwh"] == 18.0
-    assert cfg["overrides"]["tomorrow_pv_kwh"] is None
-    assert cfg["overrides"]["tomorrow_load_kwh"] == 12.0
-    save_cfg.assert_called_once_with(cfg)
-    cache.assert_awaited_once_with(cfg)
-    refresh.assert_awaited_once()
-    assert refresh.await_args.args[0] is cfg
-    assert refresh.await_args.kwargs.get("unlock_plan_soc") is True
-
-
-def test_api_save_overrides_updates_load_cache_before_ea_rebuild():
-    """New Load must hit the forecast cache before Energy arbitrage rebuilds."""
-    cfg: dict = {
-        "battery": {"capacity_kwh": 48},
-        "overrides": {
-            "today_pv_kwh": None,
-            "today_load_kwh": None,
-            "tomorrow_pv_kwh": None,
-            "tomorrow_load_kwh": None,
-        },
-    }
-    order: list[str] = []
-
-    async def _cache(_cfg):
-        order.append("cache")
-        return {}
-
-    async def _refresh(_cfg, unlock_plan_soc=False):
-        order.append(f"ea:{unlock_plan_soc}")
-        return {"rows": []}
-
-    with (
-        patch.object(config_routes, "load_config", return_value=cfg),
-        patch.object(config_routes, "save_config"),
-        patch.object(config_routes.forecast_mod, "apply_overrides_to_cache", _cache),
-        patch.object(config_routes, "hourly_plan_refresh", _refresh),
-    ):
-        asyncio.run(
-            config_routes.api_save_overrides({
-                "today_pv_kwh": None,
-                "today_load_kwh": 30.0,
-                "tomorrow_pv_kwh": None,
-                "tomorrow_load_kwh": None,
-            })
-        )
-
-    assert order == ["cache", "ea:True"]
-    assert cfg["overrides"]["today_load_kwh"] == 30.0
-
-
 def test_ea_future_hour_consumption_follows_forecast_load():
-    """Energy arbitrage future hours must use the (override/EV) forecast load."""
+    """Energy arbitrage future hours must use the (EV-inclusive) forecast load."""
     from datetime import datetime
     from unittest.mock import patch
     from zoneinfo import ZoneInfo
@@ -107,7 +21,7 @@ def test_ea_future_hour_consumption_follows_forecast_load():
 
     today = "2026-07-27"
     now = datetime(2026, 7, 27, 12, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
-    # Flat 0.5 kWh/h house load, but H16 bumped to 5.5 (EV-like override).
+    # Flat 0.5 kWh/h house load, but H16 bumped to 5.5 (EV-like load).
     load = [0.5] * 24
     load[16] = 5.5
     pv = [0.0] * 24
@@ -184,7 +98,7 @@ def test_ea_future_hour_consumption_follows_forecast_load():
 
 
 def test_api_simulation_unlock_plan_soc_forwards_to_hourly_refresh():
-    """Forecast Overrides Refresh uses ?refresh=1&unlock_plan_soc=1."""
+    """Power Management Refresh uses ?refresh=1&unlock_plan_soc=1."""
     cfg = {"battery": {"capacity_kwh": 48}}
     refresh = AsyncMock(return_value={"rows": [{"hour": 15}], "computed_at": "y"})
 

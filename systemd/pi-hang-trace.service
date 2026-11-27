@@ -1,0 +1,7 @@
+[Unit]
+Description=Record a local Pi hang trace
+
+[Service]
+Type=oneshot
+ExecStart=/home/solar-assistant/project/scripts/pi-hang-trace.sh
+Nice=10

@@ -18,13 +18,9 @@ _RADIATION = {
 }
 
 
-def test_unshaded_ignores_mask_and_scales_only_by_given_effective():
+def test_unshaded_ignores_horizon_mask():
     day = "2026-11-15"
     base = fm.pv_q15_from_radiation(_CFG, _RADIATION, day)
     raw = fm.pv_q15_from_radiation(_CFG, _RADIATION, day, apply_horizon_mask=False)
     assert sum(raw) > sum(base)
-    plain = fm.unshaded_pv_q15(_CFG, day, _RADIATION, shaded_effective=base, shaded_base=base)
-    assert plain == raw
-    slider = [v * 0.5 for v in base]
-    halved = fm.unshaded_pv_q15(_CFG, day, _RADIATION, shaded_effective=slider, shaded_base=base)
-    assert abs(sum(halved) - sum(raw) * 0.5) < 1e-3
+    assert fm.unshaded_pv_q15(_CFG, day, _RADIATION) == raw

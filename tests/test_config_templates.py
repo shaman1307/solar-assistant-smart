@@ -27,11 +27,11 @@ def test_extract_template_strips_password():
     payload = extract_template_payload({
         "location": {"latitude": 1.0},
         "sa": {"host": "localhost", "password": "secret"},
-        "overrides": {"today_pv_kwh": 1.0},
+        "plan_overrides": {"2026-01-01": {}},
     })
     assert payload["location"]["latitude"] == 1.0
     assert "password" not in (payload.get("sa") or {})
-    assert "overrides" not in payload
+    assert "plan_overrides" not in payload
 
 
 def test_seed_template_loaded(tmp_path, monkeypatch):

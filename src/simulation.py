@@ -724,17 +724,8 @@ def compute_balance_delta(
     soc_pct = float(live_metrics.get("battery_soc", 50.0))
     soc_kwh = (soc_pct / 100.0) * battery_cap
 
-    overrides = cfg.get("overrides", {})
-    pv_tomorrow = (
-        float(overrides["tomorrow_pv_kwh"])
-        if overrides.get("tomorrow_pv_kwh") is not None
-        else forecast["tomorrow"]["pv_total"]
-    )
-    load_tomorrow = (
-        float(overrides["tomorrow_load_kwh"])
-        if overrides.get("tomorrow_load_kwh") is not None
-        else forecast["tomorrow"]["load_total"]
-    )
+    pv_tomorrow = forecast["tomorrow"]["pv_total"]
+    load_tomorrow = forecast["tomorrow"]["load_total"]
     return round((pv_tomorrow + soc_kwh) - load_tomorrow, 3)
 
 

@@ -126,7 +126,7 @@ def test_compose_plan_soc_freezes_entire_locked_day():
 
 
 def test_compose_plan_soc_refresh_on_overrides():
-    """Forecast Overrides must replace the frozen solid SOC plan curve."""
+    """A refresh with unlock must replace the frozen solid SOC plan curve."""
     from src.plan_simulation import compose_plan_soc_q15
 
     existing = {
@@ -151,7 +151,7 @@ def test_compose_plan_soc_refresh_on_overrides():
 
 
 def test_hourly_plan_refresh_unlock_plan_soc_passes_refresh_true():
-    """Config/overrides path must unlock solid SOC via compose(..., refresh=True)."""
+    """Config / EV path must unlock solid SOC via compose(..., refresh=True)."""
     import asyncio
     from unittest.mock import AsyncMock, patch
 

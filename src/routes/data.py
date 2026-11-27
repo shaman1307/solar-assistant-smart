@@ -182,7 +182,6 @@ async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
         )
         unshaded = await asyncio.to_thread(
             forecast_mod.unshaded_pv_q15, cfg, date, radiation,
-            shaded_effective=base, shaded_base=base,
         )
         body: dict[str, Any] = {
             "ok": True, "date": date, "pv_forecast_q15": q15, "pv_total": round(sum(q15), 2),
@@ -287,7 +286,7 @@ async def api_simulation(
 
     ``?refresh=1`` — same path as :00/:15/:30/:45 (today only).
     ``?refresh=1&unlock_plan_soc=1`` — also rebuild the as-if-00:00 solid SOC
-    curve (Forecast Overrides Refresh).
+    curve (Power Management Refresh).
     ``?date=YYYY-MM-DD`` — past day from archive (timers) or Influx rebuild.
     """
     cfg = load_config()

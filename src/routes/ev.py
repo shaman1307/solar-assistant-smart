@@ -36,27 +36,25 @@ async def api_save_ev_charging(body: dict) -> dict[str, Any]:
     try:
         session = ev.apply_session_update(
             date_str=date_str,
-            day=body.get("day"),
-            night=body.get("night"),
+            slots={key: body.get(key) for key in ev.SLOT_KEYS},
             cfg=cfg,
+            edited_slot=body.get("edited_slot"),
+            edited_side=body.get("edited_side"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Update forecast load cache before returning so the chart sees EV immediately.
-    await forecast_mod.apply_overrides_to_cache(cfg)
-    day = session.get("day") or {}
-    night = session.get("night") or {}
-    log.info(
-        "EV charging updated for %s day=%s %s-%s %.0fkW night=%s %s-%s %.0fkW",
-        date_str,
-        bool(day.get("enabled")),
-        day.get("start"),
-        day.get("end"),
-        float(day.get("power_kw") or 0),
-        bool(night.get("enabled")),
-        night.get("start"),
-        night.get("end"),
-        float(night.get("power_kw") or 0),
+    await forecast_mod.refresh_effective_forecast(cfg)
+    summary = " ".join(
+        "{key}={on} {start}-{end} {kw:.0f}kW".format(
+            key=key,
+            on=bool((session.get(key) or {}).get("enabled")),
+            start=(session.get(key) or {}).get("start"),
+            end=(session.get(key) or {}).get("end"),
+            kw=float((session.get(key) or {}).get("power_kw") or 0),
+        )
+        for key in ev.SLOT_KEYS
     )
+    log.info("EV charging updated for %s %s", date_str, summary)
     return {"status": "saved", "date": date_str, "session": session}

@@ -235,16 +235,3 @@ async def api_set_debug_tab(body: dict) -> dict[str, bool]:
     cfg["debug_tab_enabled"] = enabled
     save_config(cfg)
     return {"ok": True, "enabled": enabled}
-
-
-@router.post("/api/overrides")
-async def api_save_overrides(body: dict) -> dict[str, str]:
-    cfg = load_config()
-    overrides = cfg.setdefault("overrides", {})
-    for key in ("today_pv_kwh", "today_load_kwh", "tomorrow_pv_kwh", "tomorrow_load_kwh"):
-        val = body.get(key)
-        overrides[key] = float(val) if val not in (None, "") else None
-    save_config(cfg)
-    await forecast_mod.apply_overrides_to_cache(cfg)
-    await hourly_plan_refresh(cfg, unlock_plan_soc=True)
-    return {"status": "saved"}

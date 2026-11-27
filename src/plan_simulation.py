@@ -473,7 +473,7 @@ async def build_plan_simulation(
 ) -> dict[str, Any]:
     """Return Energy arbitrage plan from SQLite; rebuild only on window mismatch.
 
-    Forced recalculation (config / Overrides / EV / UI Refresh / quarter jobs)
+    Forced recalculation (config / EV / UI Refresh / quarter jobs)
     goes through ``hourly_plan_refresh``.
     """
     cfg = merge_simulation_defaults(cfg)
@@ -562,7 +562,7 @@ async def hourly_plan_refresh(
 ) -> dict[str, Any]:
     """Scheduler / config refresh: incremental quarter merge or full rebuild at new day.
 
-    *unlock_plan_soc*: when True (config / Forecast Overrides / EV / manual timer),
+    *unlock_plan_soc*: when True (config / EV / manual timer),
     replace the frozen solid SOC day-plan curve with the fresh simulator curve.
     Quarterly :00/:15/:30/:45 jobs keep the lock (default False).
 
@@ -779,21 +779,14 @@ def backfill_all_stored_ea_rce(cfg: dict) -> dict[str, Any]:
 
 
 def _attach_unshaded_pv(payload: dict[str, Any], cfg: dict, date_str: str) -> None:
-    """Add mask-free PV q15 for the chart. Does not write the archive.
-
-    The series is scaled by the archived slider-only PV (``pv_pre_intraday_q15``); an
-    archive without it gets the unscaled formula.
-    """
+    """Add mask-free PV q15 for the chart. Does not write the archive."""
     forecast = payload.get("forecast")
     if not isinstance(forecast, dict) or forecast.get("pv_unshaded_q15"):
         return
     radiation = forecast.get("pv_radiation")
     if not radiation:
         return
-    shaded = list(forecast.get("pv_pre_intraday_q15") or [])
-    unshaded = forecast_mod.unshaded_pv_q15(
-        cfg, date_str, radiation, shaded_effective=shaded or None,
-    )
+    unshaded = forecast_mod.unshaded_pv_q15(cfg, date_str, radiation)
     if unshaded is not None:
         forecast["pv_unshaded_q15"] = unshaded
 
@@ -922,7 +915,7 @@ async def get_simulation_for_date(
     """Today → live plan; tomorrow → that plan's next-day rows; past date → archive.
 
     *unlock_plan_soc*: replace the frozen as-if-00:00 solid SOC curve (Forecast
-    Overrides Refresh / config). Ignored unless *refresh* is True.
+    Power Management Refresh / config). Ignored unless *refresh* is True.
     """
     now = now_warsaw()
     today = now.strftime("%Y-%m-%d")

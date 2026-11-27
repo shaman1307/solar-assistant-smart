@@ -79,7 +79,7 @@ async def get_pv_profiles(cfg: dict) -> dict[str, list[float]]:
 
 
 async def run_nightly_forecast_cache(cfg: dict) -> dict[str, Any]:
-    """23:59 job: base Load+PV for D+1/D+2, reset overrides."""
+    """23:59 job: base Load+PV for D+1/D+2."""
     return await asyncio.to_thread(fc.build_nightly_cache, cfg)
 
 
@@ -88,8 +88,8 @@ async def run_hourly_pv_refresh(cfg: dict) -> dict[str, Any]:
     return await asyncio.to_thread(fc.refresh_intraday_pv, cfg)
 
 
-async def apply_overrides_to_cache(cfg: dict) -> dict[str, Any]:
-    return await asyncio.to_thread(fc.apply_overrides_to_cache, cfg)
+async def refresh_effective_forecast(cfg: dict) -> dict[str, Any]:
+    return await asyncio.to_thread(fc.refresh_effective_forecast, cfg)
 
 
 async def recompute_pv_from_cached_radiation(cfg: dict) -> dict[str, Any]:
@@ -357,28 +357,14 @@ def unshaded_pv_q15(
     cfg: dict,
     date_str: str,
     radiation: dict[str, list] | None,
-    *,
-    shaded_effective: list[float] | None = None,
-    shaded_base: list[float] | None = None,
 ) -> list[float] | None:
-    """PV q15 with horizon masks ignored, scaled by the slider only.
-
-    ``shaded_effective`` is the shaded series after the slider and before the intraday scale.
-    """
+    """PV q15 with horizon masks ignored."""
     if not radiation or not radiation.get("time"):
         return None
     raw = pv_q15_from_radiation(
         cfg, radiation, date_str, apply_horizon_mask=False,
     )
-    if shaded_base is None:
-        shaded_base = pv_q15_from_radiation(
-            cfg, radiation, date_str, apply_horizon_mask=True,
-        )
-    base_sum = sum(float(v) for v in shaded_base)
-    effective = shaded_effective if shaded_effective is not None else shaded_base
-    eff_sum = sum(float(v) for v in effective)
-    scale = (eff_sum / base_sum) if base_sum > 1e-9 else 1.0
-    return [round(float(v) * scale, 6) for v in raw]
+    return [round(float(v), 6) for v in raw]
 
 
 def _http_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -655,8 +641,6 @@ def _assemble_forecast(
     base_today["pv_forecast_q15"] = [round(v, 6) for v in today_pv_forecast_q15]
     today_unshaded = unshaded_pv_q15(
         cfg, today_str, (day_t.get("pv") or {}).get("radiation"),
-        shaded_effective=list((day_t.get("pv") or {}).get("pre_intraday_q15") or today_pv_forecast_q15),
-        shaded_base=list((day_t.get("pv") or {}).get("base_q15") or today_pv_forecast_q15),
     )
     if today_unshaded is not None:
         base_today["pv_unshaded_q15"] = today_unshaded
@@ -670,8 +654,6 @@ def _assemble_forecast(
     base_tomorrow["pv_forecast_q15"] = [round(v, 6) for v in tomorrow_pv_forecast_q15]
     tomorrow_unshaded = unshaded_pv_q15(
         cfg, tomorrow_str, (day_tm.get("pv") or {}).get("radiation"),
-        shaded_effective=tomorrow_pv_forecast_q15,
-        shaded_base=list((day_tm.get("pv") or {}).get("base_q15") or tomorrow_pv_forecast_q15),
     )
     if tomorrow_unshaded is not None:
         base_tomorrow["pv_unshaded_q15"] = tomorrow_unshaded
@@ -679,7 +661,6 @@ def _assemble_forecast(
     base_tomorrow["load_forecast"] = [round(v, 3) for v in tomorrow_load]
 
     pv_actual_h = sum(1 for h in range(24) if today_pv_actual[h] is not None)
-    baseline = fc.baseline_totals(cfg)
     ev_payload = ev.api_payload(cfg)
 
     result: dict[str, Any] = {
@@ -692,14 +673,6 @@ def _assemble_forecast(
             "last_om_refresh": cache.get("last_om_refresh"),
             "interval_minutes": 15,
             "pv_om_resolution": "15min",
-        },
-        "baseline": baseline,
-        "overrides_saved": {
-            k: cfg.get("overrides", {}).get(k)
-            for k in (
-                "today_pv_kwh", "today_load_kwh",
-                "tomorrow_pv_kwh", "tomorrow_load_kwh",
-            )
         },
         "ev_charging": ev_payload,
     }

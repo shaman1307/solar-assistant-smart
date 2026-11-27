@@ -123,9 +123,3 @@ load:
     - 0.50
     - 0.40
     - 0.30
-
-overrides:
-  today_pv_kwh: null
-  today_load_kwh: null
-  tomorrow_pv_kwh: null
-  tomorrow_load_kwh: null

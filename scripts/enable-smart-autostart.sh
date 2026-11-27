@@ -28,6 +28,14 @@ if [ -f "${UNITS_DIR}/${GUARD}.service" ]; then
   install_unit "${GUARD}"
   sudo cp "${UNITS_DIR}/${GUARD}.timer" "/etc/systemd/system/${GUARD}.timer"
 fi
+if [ -f "${UNITS_DIR}/pi-hang-trace.service" ]; then
+  install_unit "pi-hang-trace"
+  sudo cp "${UNITS_DIR}/pi-hang-trace.timer" "/etc/systemd/system/pi-hang-trace.timer"
+fi
+if [ -f "${UNITS_DIR}/99-pi-hang.conf" ]; then
+  sudo cp "${UNITS_DIR}/99-pi-hang.conf" /etc/sysctl.d/99-pi-hang.conf
+  sudo sysctl -p /etc/sysctl.d/99-pi-hang.conf >/dev/null
+fi
 rm -f "${PROJECT_DIR}/smart.service" "${PROJECT_DIR}/smart-boot-guard.service" "${PROJECT_DIR}/smart-boot-guard.timer"
 
 if [ -f "${LEGACY_PATH}" ]; then
@@ -47,6 +55,9 @@ sudo systemctl reset-failed "${UNIT}.service" 2>/dev/null || true
 
 if [ -f "/etc/systemd/system/${GUARD}.timer" ]; then
   sudo systemctl enable --now "${GUARD}.timer"
+fi
+if [ -f "/etc/systemd/system/pi-hang-trace.timer" ]; then
+  sudo systemctl enable --now pi-hang-trace.timer
 fi
 
 ENABLED="$(systemctl is-enabled "${UNIT}.service" 2>/dev/null || echo unknown)"
