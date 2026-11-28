@@ -162,6 +162,18 @@ async def api_forecast() -> dict[str, Any]:
     return forecast
 
 
+@router.get("/api/forecast/day")
+async def api_forecast_chart_day(date: str) -> dict[str, Any]:
+    """Stored forecast for a past day, or the same PV and load forecast for a day up to today+6."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    cfg = load_config()
+    try:
+        return await asyncio.to_thread(forecast_mod.build_forecast_chart_day, cfg, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/forecast/recompute-pv")
 async def api_forecast_recompute_pv(date: str | None = None) -> dict[str, Any]:
     """Rebuild today/tomorrow PV from the last cached Open-Meteo radiation.

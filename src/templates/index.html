@@ -21,7 +21,7 @@
     body.setting-alarm fieldset {
       animation: setting-alarm-pulse 2.4s ease-in-out infinite;
     }
-    /* Native date/month: whole field opens picker (showPicker); keep visible calendar icon. */
+    /* Native date/month: whole field opens picker (showPicker). Stepper inputs hide the calendar icon. */
     input[type="date"],
     input[type="month"] {
       cursor: pointer;
@@ -351,12 +351,10 @@
     .sim-table-month thead th.mh-bg-import-tariff,
     .sim-table-month thead th.mh-bg-energy-total,
     .sim-table-month thead th.mh-bg-import-part,
-    .sim-table-month thead th.mh-bg-import-total {
-      background-color: #f3f4f6;
-    }
-    .sim-table-month thead th.mh-bg-energy-total,
-    .sim-table-month thead th.mh-bg-import-total {
-      background-color: #e5e7eb;
+    .sim-table-month thead th.mh-bg-import-total,
+    .sim-table-month thead th.mh-import-split {
+      background-color: #fff;
+      box-shadow: 0 1px 0 #e5e7eb;
     }
     .sim-table th,
     .sim-table td {
@@ -715,38 +713,47 @@
       align-items: start;
     }
     .sim-history-block--month.sim-history-block--nested {
-      margin-top: 1.5rem;
+      margin-top: 0.75rem;
     }
     .sim-history-block {
       min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
+      gap: 0.75rem;
     }
     .sim-history-head-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-start;
-      align-content: flex-start;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "title controls";
+      align-items: center;
       gap: 0.5rem 0.75rem;
       min-width: 0;
+    }
+    .sim-history-head-row--deposit {
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      grid-template-areas: "title deposit controls";
     }
     .sim-history-head-row h2 {
       min-width: 0;
     }
     .sim-history-head-title {
+      grid-area: title;
       min-width: 0;
-      flex: 1 1 auto;
+    }
+    .sim-history-head-deposit {
+      grid-area: deposit;
+      justify-self: center;
+      margin: 0;
+      min-width: 0;
     }
     .sim-history-head-controls {
+      grid-area: controls;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: flex-end;
-      gap: 0.5rem 0.75rem;
-      margin-left: auto;
-      flex: 0 1 auto;
+      gap: 0.5rem;
+      min-width: 0;
     }
     .sim-history-head-meta {
       display: flex;
@@ -796,21 +803,16 @@
     }
     @media (max-width: 767px) {
       .sim-history-head-row {
-        flex-direction: column;
-        flex-wrap: nowrap;
-        align-items: stretch;
-        align-content: flex-start;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "title" "controls";
         gap: 0.375rem;
       }
-      .sim-history-head-title {
-        flex: 0 0 auto;
-        width: 100%;
+      .sim-history-head-row--deposit {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas: "title title" "deposit controls";
       }
-      .sim-history-head-controls {
-        flex: 0 0 auto;
-        width: 100%;
-        margin-left: 0;
-        justify-content: flex-end;
+      .sim-history-head-deposit {
+        justify-self: start;
       }
     }
     .sim-history-table-wrap {
@@ -1532,6 +1534,112 @@
       line-height: 1rem;
       transition: background-color 0.15s, color 0.15s;
     }
+    .fc-day-btn.fc-day-step { min-width: 2rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+    :root { --ctl-h: 1.625rem; }
+    .fc-day-btn.fc-day-icon {
+      width: var(--ctl-h);
+      min-width: 0;
+      height: var(--ctl-h);
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0.5rem;
+      box-sizing: border-box;
+      flex: 0 0 auto;
+    }
+    .date-stepper {
+      display: inline-flex;
+      align-items: stretch;
+      width: 7.5rem;
+      flex: 0 0 7.5rem;
+      height: var(--ctl-h);
+      box-sizing: border-box;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.5rem;
+      background: #fff;
+      overflow: hidden;
+    }
+    /* Same 12px chevron geometry as .col-toggle-chevron; the first nav button is mirrored. */
+    .date-stepper-nav {
+      flex: 0 0 1.5rem;
+      width: 1.5rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #374151;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .date-stepper-nav::before {
+      content: '';
+      width: 12px;
+      height: 12px;
+      background-color: currentColor;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+    .date-stepper-nav:first-child::before { transform: scaleX(-1); }
+    /* Text nav button ("−" / "+") without the chevron. */
+    .date-stepper-nav--text { font-size: 1rem; font-weight: 600; line-height: 1; }
+    .date-stepper-nav--text::before { content: none; }
+    .date-stepper-nav:hover { background: #f3f4f6; }
+    .date-stepper-nav:disabled { opacity: 0.35; cursor: default; }
+    .date-stepper-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      text-align: center;
+      font-size: 0.75rem;
+      line-height: 1.25rem;
+      color: #1f2937;
+    }
+    .date-stepper-input::-webkit-calendar-picker-indicator { display: none; }
+    .date-stepper-face {
+      position: relative;
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+    }
+    .date-stepper-text {
+      font-size: 0.75rem;
+      line-height: 1.25rem;
+      color: #1f2937;
+      pointer-events: none;
+    }
+    .date-stepper-input-cover {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .col-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      height: var(--ctl-h);
+      padding: 0 0.6rem;
+      border-radius: 0.5rem;
+      background: #e5e7eb;
+      color: #1f2937;
+      font-size: 0.75rem;
+      line-height: 1;
+      box-sizing: border-box;
+      flex-shrink: 0;
+    }
+    .col-toggle:hover { background: #d1d5db; }
+    .col-toggle-chevron { transition: transform 0.15s ease; }
+    .col-toggle.is-open .col-toggle-chevron { transform: rotate(90deg); }
+    .fc-day-btn:disabled { opacity: 0.45; cursor: default; }
+    .fc-day-btn.is-busy svg { animation: fc-icon-spin 0.8s linear infinite; }
+    @keyframes fc-icon-spin { to { transform: rotate(360deg); } }
     @media (max-width: 639px) {
       .power-management-card {
         padding-top: 0.75rem;
@@ -1605,20 +1713,29 @@
       height: 260px;
     }
     .fc-forecast-totals {
-      position: absolute;
-      z-index: 5;
-      top: 0;
-      right: 2.15rem;
-      text-align: right;
-      font-size: 11px;
-      line-height: 1.3;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.1rem 1rem;
+      white-space: nowrap;
       font-variant-numeric: tabular-nums;
-      pointer-events: none;
-      background: linear-gradient(to left, #fff 72%, rgba(255,255,255,0));
-      padding: 0.1rem 0.2rem 0.15rem 0.85rem;
     }
-    .fc-forecast-totals .fc-total-pv { color: #d97706; font-weight: 600; }
-    .fc-forecast-totals .fc-total-load { color: #2563eb; font-weight: 600; }
+    @media (max-width: 767px) {
+      .fc-forecast-totals { justify-content: flex-start; }
+    }
+    .fc-forecast-totals .fc-total-pv { color: #d97706; }
+    .fc-forecast-totals .fc-total-load { color: #2563eb; }
+    .fc-total {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    /* Live System icons (static/flow) at control height. */
+    .fc-total-icon {
+      height: var(--ctl-h);
+      width: auto;
+      display: block;
+    }
     /* Plot paint stays under the tooltip. Unshaded PV fill is the bottom layer. */
     .power-management-chart #fc-chart-area {
       z-index: 1;
@@ -1664,6 +1781,7 @@
       container-type: inline-size;
     }
     .ev-charging-grid {
+      --ev-ctl-h: 1.75rem;
       display: grid;
       grid-template-columns: auto repeat(3, minmax(0, 1fr));
       gap: 0.5rem 0.75rem;
@@ -1680,7 +1798,8 @@
       font-size: 0.75rem;
       border: 1px solid #d1d5db;
       border-radius: 0.375rem;
-      padding: 0.35rem 0.5rem;
+      height: var(--ev-ctl-h);
+      padding: 0 0.5rem;
       color: #111827;
       background: #fff;
       cursor: pointer;
@@ -1839,34 +1958,24 @@
       align-items: center;
       gap: 0.25rem;
     }
-    .ev-power-stepper input[type="number"] {
-      flex: 1;
-      min-width: 0;
-      width: 0;
-      text-align: center;
-      font-size: 0.75rem;
-      border: 1px solid #d1d5db;
-      border-radius: 0.375rem;
-      padding: 0.3rem 0.2rem;
-    }
     .ev-power-stepper .ev-kw-label {
       flex-shrink: 0;
       font-size: 0.6875rem;
       color: #6b7280;
     }
-    .ev-power-stepper button {
-      width: 1.75rem;
-      height: 1.75rem;
+    /* Power field: the shared .date-stepper box with "−" / "+" as its nav buttons. */
+    .ev-charging-grid .date-stepper {
+      width: 100%;
+      flex: 1 1 auto;
+      min-width: 0;
+      height: var(--ev-ctl-h);
+      border-color: #d1d5db;
       border-radius: 0.375rem;
-      background: #e5e7eb;
-      color: #374151;
-      font-weight: 600;
-      line-height: 1;
     }
-    .ev-power-stepper button:hover { background: #d1d5db; }
     @media (max-width: 639px) {
       .ev-charging-grid {
         --ev-fit-font: clamp(7px, 2.35cqi, 11px);
+        --ev-ctl-h: 1.35rem;
         grid-template-columns: auto minmax(0, 0.88fr) minmax(0, 0.88fr) minmax(5rem, 1.08fr);
         gap: 0.24rem 0.28rem;
       }
@@ -1879,7 +1988,7 @@
         font-size: calc(var(--ev-fit-font) * 0.88);
       }
       .ev-charging-grid input[type="time"] {
-        padding: 0.28em 0.1em;
+        padding: 0 0.1em;
         line-height: 1.1;
       }
       .ev-charging-grid input[type="time"]::-webkit-datetime-edit {
@@ -1894,17 +2003,10 @@
         gap: 0.12rem;
       }
       .ev-charging-grid .ev-power-stepper button {
-        width: 1.35rem;
-        height: 1.35rem;
-        min-width: 1.35rem;
-        flex-shrink: 0;
-        padding: 0;
+        flex-basis: var(--ev-ctl-h);
+        width: var(--ev-ctl-h);
       }
       .ev-charging-grid .ev-power-stepper input[type="number"] {
-        flex: 1 1 1.5rem;
-        min-width: 1.35rem;
-        width: auto;
-        padding: 0.28em 0.06em;
         line-height: 1.1;
       }
     }
@@ -2031,9 +2133,6 @@
     .dashboard-col-live .dashboard-col-head h2,
     .dashboard-col-energy .dashboard-col-head h2 {
       font-size: 14px;
-    }
-    .dashboard-col-energy #accruals-date {
-      font-size: 10px;
     }
     .energy-overview-cards .dash-card-value {
       font-size: clamp(14px, 5.2cqi, 20px);
@@ -2301,9 +2400,14 @@
         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">
           Energy Overview
         </h2>
-        <input type="date" id="accruals-date"
-          class="bg-white border border-gray-300 rounded-lg px-2 py-1 text-xs text-gray-900 focus:outline-none focus:border-amber-500 shrink-0"
-          onchange="loadAccruals(this.value)" />
+        <div class="date-stepper">
+          <button type="button" id="accruals-date-prev" class="date-stepper-nav" onclick="stepAccrualsDate(-1)" aria-label="Previous day"></button>
+          <div class="date-stepper-face">
+            <span class="date-stepper-text">—</span>
+            <input type="date" id="accruals-date" class="date-stepper-input date-stepper-input-cover" onchange="loadAccruals(this.value)" />
+          </div>
+          <button type="button" id="accruals-date-next" class="date-stepper-nav" onclick="stepAccrualsDate(1)" aria-label="Next day"></button>
+        </div>
       </div>
       <div id="energy-overview-cards" class="energy-overview-cards dash-card-grid" data-card-grid="energy-overview">
         <div class="bg-white rounded-xl border border-gray-200 energy-metric-card" data-card-id="pv">
@@ -3047,27 +3151,33 @@
           <input type="time" id="ev-night-start" value="00:00" step="900" aria-label="Slot 1 start" />
           <input type="time" id="ev-night-end" value="04:00" step="900" aria-label="Slot 1 end" />
           <div class="ev-power-stepper">
-            <button type="button" id="ev-night-minus" aria-label="Decrease slot 1 power">−</button>
-            <input type="number" id="ev-night-power" min="0" step="1" value="5" aria-label="Slot 1 charging power kW" />
-            <button type="button" id="ev-night-plus" aria-label="Increase slot 1 power">+</button>
+            <div class="date-stepper">
+              <button type="button" id="ev-night-minus" class="date-stepper-nav date-stepper-nav--text" aria-label="Decrease slot 1 power">−</button>
+              <input type="number" id="ev-night-power" class="date-stepper-input" min="0" step="1" value="5" aria-label="Slot 1 charging power kW" />
+              <button type="button" id="ev-night-plus" class="date-stepper-nav date-stepper-nav--text" aria-label="Increase slot 1 power">+</button>
+            </div>
             <span class="text-xs text-gray-500 ev-kw-label">kW</span>
           </div>
           <input type="checkbox" id="ev-extra-enabled" class="w-4 h-4 rounded border-gray-300" aria-label="Slot 2 charging enabled" />
           <input type="time" id="ev-extra-start" value="13:00" step="900" aria-label="Slot 2 start" />
           <input type="time" id="ev-extra-end" value="15:00" step="900" aria-label="Slot 2 end" />
           <div class="ev-power-stepper">
-            <button type="button" id="ev-extra-minus" aria-label="Decrease slot 2 power">−</button>
-            <input type="number" id="ev-extra-power" min="0" step="1" value="5" aria-label="Slot 2 charging power kW" />
-            <button type="button" id="ev-extra-plus" aria-label="Increase slot 2 power">+</button>
+            <div class="date-stepper">
+              <button type="button" id="ev-extra-minus" class="date-stepper-nav date-stepper-nav--text" aria-label="Decrease slot 2 power">−</button>
+              <input type="number" id="ev-extra-power" class="date-stepper-input" min="0" step="1" value="5" aria-label="Slot 2 charging power kW" />
+              <button type="button" id="ev-extra-plus" class="date-stepper-nav date-stepper-nav--text" aria-label="Increase slot 2 power">+</button>
+            </div>
             <span class="text-xs text-gray-500 ev-kw-label">kW</span>
           </div>
           <input type="checkbox" id="ev-day-enabled" class="w-4 h-4 rounded border-gray-300" aria-label="Slot 3 charging enabled" />
           <input type="time" id="ev-day-start" value="22:00" step="900" aria-label="Slot 3 start" />
           <input type="time" id="ev-day-end" value="00:00" step="900" aria-label="Slot 3 end" />
           <div class="ev-power-stepper">
-            <button type="button" id="ev-day-minus" aria-label="Decrease slot 3 power">−</button>
-            <input type="number" id="ev-day-power" min="0" step="1" value="5" aria-label="Slot 3 charging power kW" />
-            <button type="button" id="ev-day-plus" aria-label="Increase slot 3 power">+</button>
+            <div class="date-stepper">
+              <button type="button" id="ev-day-minus" class="date-stepper-nav date-stepper-nav--text" aria-label="Decrease slot 3 power">−</button>
+              <input type="number" id="ev-day-power" class="date-stepper-input" min="0" step="1" value="5" aria-label="Slot 3 charging power kW" />
+              <button type="button" id="ev-day-plus" class="date-stepper-nav date-stepper-nav--text" aria-label="Increase slot 3 power">+</button>
+            </div>
             <span class="text-xs text-gray-500 ev-kw-label">kW</span>
           </div>
         </div>
@@ -3089,28 +3199,54 @@
     </div>
   </section>
 
+  {# Icon button that resets a date field to today. #}
+  {% macro date_today_button(btn_id, onclick) %}
+        <button type="button" id="{{ btn_id }}" onclick="{{ onclick }}"
+          class="fc-day-btn fc-day-icon bg-gray-200 hover:bg-gray-300 text-gray-800 shrink-0"
+          title="Today" aria-label="Today">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>
+          </svg>
+        </button>
+  {% endmacro %}
+
   <!-- Power Management — PV / Load / SOC chart for the selected day -->
-  <section>
-    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Power Management</h2>
-      <div class="flex gap-2 text-xs items-center">
+  <section class="sim-history-block">
+    <div class="sim-history-head-row sim-history-head-row--deposit">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider sim-history-head-title">Forecast</h2>
+      <p id="fc-forecast-totals" class="sim-history-head-deposit fc-forecast-totals text-sm font-semibold text-gray-500">
+        <span class="fc-total" title="PV forecast">
+          <img class="fc-total-icon" src="static/flow/solar.png" alt="PV" />
+          <span id="fc-total-pv" class="fc-total-pv">—</span>
+        </span>
+        <span class="fc-total" title="Consumption forecast">
+          <img class="fc-total-icon" src="static/flow/house.png" alt="Consumption" />
+          <span id="fc-total-load" class="fc-total-load">—</span>
+        </span>
+      </p>
+      <div class="sim-history-head-controls">
         <button type="button" id="pm-refresh"
           onclick="refreshPowerManagementPlan()"
-          class="fc-day-btn bg-gray-200 hover:bg-gray-300 text-gray-800"
-          title="Force rebuild plan and SOC plan from current EV">Refresh</button>
-        <button onclick="showForecastDay('today')" id="fc-btn-today"
-          class="fc-day-btn bg-amber-500 text-gray-950 font-semibold">Today</button>
-        <button onclick="showForecastDay('tomorrow')" id="fc-btn-tomorrow"
-          class="fc-day-btn bg-gray-200 text-gray-600">Tomorrow</button>
+          class="fc-day-btn fc-day-icon bg-gray-200 hover:bg-gray-300 text-gray-800"
+          title="Refresh" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/>
+          </svg>
+        </button>
+        {{ date_today_button('fc-date-today', 'setFcChartDate(DEBUG_TODAY)') }}
+        <div class="date-stepper">
+          <button type="button" id="fc-date-prev" class="date-stepper-nav" onclick="stepFcChartDate(-1)" aria-label="Previous day"></button>
+          <div class="date-stepper-face">
+            <span class="date-stepper-text">—</span>
+            <input type="date" id="fc-date" value="{{ today_date }}" class="date-stepper-input date-stepper-input-cover" onchange="setFcChartDate(this.value)" />
+          </div>
+          <button type="button" id="fc-date-next" class="date-stepper-nav" onclick="stepFcChartDate(1)" aria-label="Next day"></button>
+        </div>
       </div>
     </div>
     <div class="bg-white rounded-xl border border-gray-200 p-4 power-management-card">
         <div class="power-management-chart">
           <div class="relative" id="fc-chart-wrap">
-            <div id="fc-forecast-totals" class="fc-forecast-totals">
-              <div>PV forecast <span id="fc-total-pv" class="fc-total-pv">—</span></div>
-              <div>Consumption forecast <span id="fc-total-load" class="fc-total-load">—</span></div>
-            </div>
             <div id="fc-chart-tooltip" class="dash-chart-tooltip hidden"></div>
             <div class="absolute left-0 top-0 bottom-6 w-6 flex flex-col justify-between items-end pr-0.5 pointer-events-none dash-chart-y" id="fc-y-axis"></div>
             <div class="absolute right-0 top-0 bottom-6 w-8 flex flex-col justify-between items-start pl-0.5 pointer-events-none" id="fc-y-axis-soc"></div>
@@ -3142,16 +3278,27 @@
       <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0 sim-history-head-title" id="sim-title" title="minimize net bill">Energy arbitrage</h2>
       <div class="sim-history-head-controls">
         <button type="button" id="sim-price-cols-toggle"
-          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-          title="Show or hide Buy Price and Sell Price columns">Buy/Sell ▶</button>
+          class="col-toggle"
+          title="Show or hide Buy Price and Sell Price columns" aria-expanded="false">
+          <span>Buy/Sell</span>
+          <svg class="col-toggle-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
         <button type="button" id="sim-refresh-btn" onclick="refreshSimView()"
-          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0">Refresh</button>
-        <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
-          <span>Day</span>
-          <input type="date" id="sim-date"
-            class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-800 tabular-nums"
-            onchange="loadSimulationForDate(this.value)" />
-        </label>
+          class="fc-day-btn fc-day-icon bg-gray-200 hover:bg-gray-300 text-gray-800 shrink-0"
+          title="Refresh" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/>
+          </svg>
+        </button>
+        {{ date_today_button('sim-date-today', 'loadSimulationForDate(DEBUG_TODAY)') }}
+        <div class="date-stepper">
+          <button type="button" id="sim-date-prev" class="date-stepper-nav" onclick="stepSimDate(-1)" aria-label="Previous day"></button>
+          <div class="date-stepper-face">
+            <span class="date-stepper-text">—</span>
+            <input type="date" id="sim-date" aria-label="Day" class="date-stepper-input date-stepper-input-cover" onchange="loadSimulationForDate(this.value)" />
+          </div>
+          <button type="button" id="sim-date-next" class="date-stepper-nav" onclick="stepSimDate(1)" aria-label="Next day"></button>
+        </div>
       </div>
     </div>
     <p id="sim-history-hint" class="hidden text-[11px] text-amber-700 mt-1 mb-0"></p>
@@ -3208,52 +3355,70 @@
       </table>
     </div>
 
-    <div class="sim-history-block sim-history-block--month sim-history-block--nested">
-    <div class="sim-history-head-row">
-      <div class="sim-history-head-title">
-        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">Monthly history</h2>
-        <p class="mt-1 mb-0">
-          <span class="sim-history-deposit ov-total-label text-sm font-semibold text-gray-500"
-            title="Sum of remaining deposit balances across months. Each month credits export RCE into the pool; import tariff is paid from older months first (not subtracted from that month credit).">
-            <button type="button" id="history-deposit-label" class="sim-history-deposit-label"
-              title="Show monthly deposit credits"
-              onclick="openHistoryDepositChart()">Energy Deposit:</button>
-            <button type="button" id="history-deposit-total" onclick="rebuildHistoryFromSqlite()"
-              class="sim-history-deposit-value tabular-nums font-semibold text-green-600 hover:text-green-700 underline decoration-dotted underline-offset-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-              title="Click to full rebuild from Energy Arbitrage actuals (after SQLite edits)">— PLN</button>
-          </span>
-        </p>
-      </div>
+    {#- Monthly history block. full=True adds the Details/Dis column groups with their toggle buttons. -#}
+    {% macro monthly_history_block(full, nested) %}
+    <div class="sim-history-block sim-history-block--month{% if nested %} sim-history-block--nested{% endif %}" data-mh-root{% if full %} data-mh-full="1"{% endif %}>
+    <div class="sim-history-head-row sim-history-head-row--deposit">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider truncate min-w-0 sim-history-head-title">Monthly history</h2>
+      <p class="sim-history-head-deposit">
+        <span class="sim-history-deposit ov-total-label text-sm font-semibold text-gray-500"
+          title="Sum of remaining deposit balances across months. Each month credits export RCE into the pool; import tariff is paid from older months first (not subtracted from that month credit).">
+          <button type="button" data-mh="deposit-label" class="sim-history-deposit-label"
+            title="Show monthly deposit credits"
+            onclick="openHistoryDepositChart()">Energy Deposit:</button>
+          <button type="button" data-mh="deposit-total" onclick="rebuildHistoryFromSqlite()"
+            class="sim-history-deposit-value tabular-nums font-semibold text-green-600 hover:text-green-700 underline decoration-dotted underline-offset-2 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+            title="Click to full rebuild from Energy Arbitrage actuals (after SQLite edits)">— PLN</button>
+        </span>
+      </p>
       <div class="sim-history-head-controls">
+        {% if full %}
         <button type="button" id="history-month-import-cols-toggle"
-          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-          title="Show or hide Grid imp High/Low (parts of Grid import kWh), Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import">Details ▶</button>
+          class="col-toggle"
+          title="Show or hide Grid imp High/Low (parts of Grid import kWh), Energy Export RCE, Energy Import tariff/service/total, and Baseline Export/Import" aria-expanded="false">
+          <span>Details</span>
+          <svg class="col-toggle-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
         <button type="button" id="history-month-dis-cols-toggle"
-          class="px-3 py-1 text-xs rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 transition-colors shrink-0"
-          title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)">Dis ▶</button>
-        <label class="flex items-center gap-1.5 whitespace-nowrap text-xs text-gray-500 shrink-0" lang="pl-PL">
-          <span>Month</span>
-          <input type="month" id="history-month-picker"
-            class="rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-900"
-            onchange="loadHistoryMonth()" />
-        </label>
+          class="col-toggle"
+          title="Show or hide evening Dis baseline (Export, Import, Cost Total, Saved vs Dis)" aria-expanded="false">
+          <span>Dis</span>
+          <svg class="col-toggle-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        {% endif %}
+        <div class="date-stepper">
+          <button type="button" data-mh="prev" class="date-stepper-nav" onclick="stepHistoryMonth(historyMonthRoot(this), -1)" aria-label="Previous month"></button>
+          <div class="date-stepper-face">
+            <span class="date-stepper-text" data-mh="text">—</span>
+            <input type="month" data-mh="picker" class="date-stepper-input date-stepper-input-cover" aria-label="Month" onchange="loadHistoryMonth(historyMonthRoot(this))" />
+          </div>
+          <button type="button" data-mh="next" class="date-stepper-nav" onclick="stepHistoryMonth(historyMonthRoot(this), 1)" aria-label="Next month"></button>
+        </div>
       </div>
     </div>
     <div class="sim-history-table-wrap sim-table-wrap bg-white rounded-xl border border-gray-200">
-      <table class="sim-table sim-table-month sim-month-import-collapsed sim-month-dis-collapsed">
+      <table class="sim-table sim-table-month{% if full %} sim-month-import-collapsed sim-month-dis-collapsed{% endif %}">
         <colgroup>
           <col class="sim-col-day">
           <col class="sim-col-kwh" span="3">
+          {% if full %}
           <col class="sim-col-kwh mh-col-import-detail" span="2">
+          {% endif %}
           <col class="sim-col-kwh">
+          {% if full %}
           <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost mh-col-import-detail">
+          {% endif %}
           <col class="sim-col-cost">
+          {% if full %}
           <col class="sim-col-cost mh-col-import-detail" span="3">
           <col class="sim-col-cost mh-col-import-detail">
           <col class="sim-col-cost mh-col-import-detail">
+          {% endif %}
           <col class="sim-col-cost" span="2">
+          {% if full %}
           <col class="sim-col-cost mh-col-dis-baseline" span="4">
+          {% endif %}
         </colgroup>
         <thead>
           <tr class="border-b border-gray-200 text-gray-500 text-left">
@@ -3261,12 +3426,17 @@
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Production<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Consumption<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid import<br><span class="font-normal">kWh</span></th>
+            {% if full %}
             <th class="font-medium text-right mh-import-split mh-col-import-detail" title="Peak-zone part of Grid import (kWh)">Grid imp High<br><span class="font-normal">kWh</span></th>
             <th class="font-medium text-right mh-import-split mh-col-import-detail" title="Off-peak-zone part of Grid import (kWh)">Grid imp Low<br><span class="font-normal">kWh</span></th>
+            {% endif %}
             <th class="font-medium text-right mh-bg-import-part" title="(kWh)">Grid export<br><span class="font-normal">kWh</span></th>
+            {% if full %}
             <th class="font-medium text-right mh-bg-export mh-col-import-detail" title="RCE Cost (PLN)">Energy Export<br><span class="font-normal">RCE</span></th>
             <th class="font-medium text-right mh-bg-import-tariff mh-col-import-detail" title="Tariff Cost (PLN)">Energy Import<br><span class="font-normal">Tariff</span></th>
+            {% endif %}
             <th class="font-medium text-right mh-bg-energy-total" title="(PLN)">Energy Cost Total<br><span class="font-normal">Deposit</span></th>
+            {% if full %}
             <th class="font-medium text-right mh-bg-import-part mh-bg-import-part--first mh-col-import-detail" title="Service Cost (PLN)">Energy Import<br><span class="font-normal">Service</span></th>
             <th class="font-medium text-right mh-bg-import-part mh-col-import-detail" title="Service Fee (PLN)">Energy Import<br><span class="font-normal">Fee</span></th>
             <th class="font-medium text-right mh-bg-import-total mh-col-import-detail" title="Cost Total (To be paid) (PLN)">Energy Import<br><span class="font-normal">To pay</span></th>
@@ -3282,10 +3452,12 @@ Charge: PV only
 Discharge to grid: battery overflow only
 House load: battery while SOC &gt; min
 SOC chains day-to-day within the month">Baseline Import<br><span class="font-normal">Imp</span></th>
+            {% endif %}
             <th class="font-medium text-right mh-bg-energy-total" title="(PLN)
 Baseline Export − Baseline Import">Baseline Cost<br><span class="font-normal">Net</span></th>
             <th class="font-medium text-right mh-bg-import-total" title="(PLN)
 Actual Energy Cost Total − Baseline Cost">Saved<br><span class="font-normal">PLN</span></th>
+            {% if full %}
             <th class="font-medium text-right mh-bg-export mh-col-dis-baseline" title="(PLN)
 Evening Dis baseline (hardcoded)
 Dis 8 kW 19:00–22:00 down to SOC 30%
@@ -3300,23 +3472,27 @@ SOC chains day-to-day within the month">Dis Import<br><span class="font-normal">
 Dis Export − Dis Import">Dis Cost<br><span class="font-normal">Net</span></th>
             <th class="font-medium text-right mh-bg-import-total mh-col-dis-baseline" title="(PLN)
 Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal">Saved</span></th>
+            {% endif %}
           </tr>
         </thead>
-        <tbody id="history-month-body-total">
-          <tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
+        {% set mh_cols = 21 if full else 8 %}
+        <tbody data-mh="body-total">
+          <tr><td colspan="{{ mh_cols }}" class="px-3 py-6 text-center text-gray-500">Loading monthly history…</td></tr>
         </tbody>
-        <tbody id="history-month-toggle" class="hidden">
+        <tbody data-mh="toggle" class="hidden">
           <tr class="border-b border-gray-200 bg-slate-50">
-            <td colspan="21" class="px-3 py-2">
-              <button type="button" id="history-month-btn" onclick="toggleHistoryMonthDays()"
+            <td colspan="{{ mh_cols }}" class="px-3 py-2">
+              <button type="button" data-mh="days-btn" onclick="toggleHistoryMonthDays(historyMonthRoot(this))"
                 class="text-xs font-medium text-slate-700 hover:text-slate-900">Daily breakdown ▼</button>
             </td>
           </tr>
         </tbody>
-        <tbody id="history-month-body-days" class="hidden"></tbody>
+        <tbody data-mh="body-days" class="hidden"></tbody>
       </table>
     </div>
     </div>
+    {% endmacro %}
+    {{ monthly_history_block(False, True) }}
     </div>
   </section>
 
@@ -3426,6 +3602,10 @@ Actual Energy Cost Total − Dis Cost">Saved vs Dis<br><span class="font-normal"
         </tbody>
       </table>
     </div>
+  </section>
+
+  <section>
+    {{ monthly_history_block(True, False) }}
   </section>
 
   <section class="bg-white rounded-xl border border-gray-200 p-4">
@@ -3967,9 +4147,9 @@ const SA_LABELS = {
   soc: 'SOC',
   socPlan: 'SOC plan',
   socActual: 'SOC',
-  pvForecast: 'PV forecast',
+  pvForecast: 'PV',
   pvActual: 'PV actual',
-  loadForecast: 'Consumption forecast',
+  loadForecast: 'Consumption',
   loadAvg7d: 'Load (7d avg)',
   loadActual: 'Consumption actual',
 };
@@ -4218,6 +4398,46 @@ function initSimDate() {
   if (!el) return;
   el.value = DEBUG_TODAY;
   el.max = nextCalendarDate(DEBUG_TODAY);
+  syncSimDateButtons();
+}
+
+/** Disable the stepper arrows at the min/max day. */
+function syncDateStepperButtons(prev, next, value, min, max) {
+  if (prev) prev.disabled = !!(min && value <= min);
+  if (next) next.disabled = !!(max && value >= max);
+}
+
+/** Paint the visible DD.MM.YYYY text of a date stepper from its date input. */
+function syncDateStepperText(input) {
+  const text = input?.closest('.date-stepper')?.querySelector('.date-stepper-text');
+  if (text) text.textContent = formatSimPlanDate(input.value).replace(/-/g, '.') || '—';
+}
+
+/** Shift an ISO day by delta days, clamped to min/max. */
+function stepDateValue(value, delta, min, max) {
+  let next = shiftIsoDate(value || DEBUG_TODAY, delta);
+  if (max && next > max) next = max;
+  if (min && next < min) next = min;
+  return next;
+}
+
+function syncSimDateButtons() {
+  const el = document.getElementById('sim-date');
+  syncDateStepperText(el);
+  syncDateStepperButtons(
+    document.getElementById('sim-date-prev'),
+    document.getElementById('sim-date-next'),
+    el?.value || DEBUG_TODAY, el?.min, el?.max,
+  );
+}
+
+function stepSimDate(delta) {
+  const el = document.getElementById('sim-date');
+  if (!el) return;
+  const next = stepDateValue(el.value, delta, el.min, el.max);
+  if (next === el.value) return;
+  loadSimulationForDate(next);
+  syncSimDateButtons();
 }
 
 function updateSimHistoryChrome(data) {
@@ -4247,10 +4467,9 @@ function updateSimHistoryChrome(data) {
 
 async function refreshSimView() {
   const btn = document.getElementById('sim-refresh-btn');
-  const prevLabel = btn?.textContent;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Refreshing…';
+    btn.classList.add('is-busy');
   }
   try {
     const date = document.getElementById('sim-date')?.value || DEBUG_TODAY;
@@ -4263,7 +4482,7 @@ async function refreshSimView() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = prevLabel || 'Refresh';
+      btn.classList.remove('is-busy');
     }
   }
 }
@@ -4272,6 +4491,7 @@ async function loadSimulationForDate(dateStr, options = {}) {
   const date = dateStr || DEBUG_TODAY;
   const el = document.getElementById('sim-date');
   if (el && el.value !== date) el.value = date;
+  syncSimDateButtons();
   pastPvRecalc = null;
   const bodyTotal = document.getElementById('sim-body-total');
   if (bodyTotal) {
@@ -4465,29 +4685,117 @@ async function loadForecast(force = false) {
       updateEnergyPlanFill(accrualData.totals.pv, accrualData.totals.load, accrualsDate);
     }
     initEvChargingPanel(forecastData.ev_charging);
+    applyFcChartBounds();
   } catch (e) { console.warn('forecast error', e); }
 }
 
-function showForecastDay(day) {
-  currentForecastDay = day;
-  const fcDayBase = 'fc-day-btn ';
-  document.getElementById('fc-btn-today').className =
-    fcDayBase +
-    (day === 'today' ? 'bg-amber-500 text-gray-950 font-semibold' : 'bg-gray-200 text-gray-600');
-  document.getElementById('fc-btn-tomorrow').className =
-    fcDayBase +
-    (day === 'tomorrow' ? 'bg-amber-500 text-gray-950 font-semibold' : 'bg-gray-200 text-gray-600');
-  applyEvFormForDay(day);
-  renderForecast();
+let fcExtraDay = null;
+let fcExtraReq = 0;
+
+function shiftIsoDate(iso, days) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setDate(dt.getDate() + days);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+}
+
+function fcChartDate() {
+  return document.getElementById('fc-date')?.value || DEBUG_TODAY;
+}
+
+function fcDateMin() {
+  return forecastData?.chart_min_date || DEBUG_TODAY;
+}
+
+function fcDateMax() {
+  return forecastData?.chart_max_date || shiftIsoDate(DEBUG_TODAY, 6);
+}
+
+function fcChartDayKey(date) {
+  if (date === DEBUG_TODAY) return 'today';
+  if (date === shiftIsoDate(DEBUG_TODAY, 1)) return 'tomorrow';
+  return null;
+}
+
+function clampFcDate(iso) {
+  if (!iso) return DEBUG_TODAY;
+  if (iso < fcDateMin()) return fcDateMin();
+  if (iso > fcDateMax()) return fcDateMax();
+  return iso;
+}
+
+function applyFcChartBounds() {
+  const el = document.getElementById('fc-date');
+  if (!el) return;
+  el.min = fcDateMin();
+  el.max = fcDateMax();
+  if (!el.value) el.value = DEBUG_TODAY;
+  const clamped = clampFcDate(el.value);
+  if (el.value !== clamped) el.value = clamped;
+  syncFcDateButtons();
+}
+
+function syncFcDateButtons() {
+  syncDateStepperText(document.getElementById('fc-date'));
+  syncDateStepperButtons(
+    document.getElementById('fc-date-prev'),
+    document.getElementById('fc-date-next'),
+    fcChartDate(), fcDateMin(), fcDateMax(),
+  );
+}
+
+function stepFcChartDate(delta) {
+  setFcChartDate(stepDateValue(fcChartDate(), delta, fcDateMin(), fcDateMax()));
+}
+
+async function loadFcExtraDay(date) {
+  const req = ++fcExtraReq;
+  try {
+    const res = await fetch('api/forecast/day?date=' + encodeURIComponent(date));
+    if (!res.ok) {
+      console.warn('forecast day', res.status);
+      return;
+    }
+    const body = await res.json();
+    if (req !== fcExtraReq || fcChartDate() !== date) return;
+    fcExtraDay = body;
+    renderForecast();
+  } catch (e) {
+    console.warn('forecast day', e);
+  }
+}
+
+applyFcChartBounds();
+
+function setFcChartDate(iso) {
+  const el = document.getElementById('fc-date');
+  const date = clampFcDate(iso);
+  if (el) el.value = date;
+  syncFcDateButtons();
+  const key = fcChartDayKey(date);
+  if (key) {
+    currentForecastDay = key;
+    applyEvFormForDay(key);
+    renderForecast();
+    return;
+  }
+  if (fcExtraDay?.date === date) {
+    renderForecast();
+    return;
+  }
+  loadFcExtraDay(date);
 }
 
 function renderForecast() {
   if (!forecastData) return;
-  const past = pastForecastView();
-  const day = past ? past.day : forecastData[currentForecastDay];
+  const chartDate = fcChartDate();
+  const dayKey = fcChartDayKey(chartDate);
+  const extra = !dayKey && fcExtraDay?.date === chartDate ? fcExtraDay : null;
+  const day = dayKey ? forecastData[dayKey] : extra;
   if (!day) return;
-  const isToday = !past && currentForecastDay === 'today';
-  const showActual = isToday || !!past;
+  const isToday = dayKey === 'today';
+  const showActual = isToday || !!extra?.past;
   const slotCount = CHART_SLOTS_Q15;
 
   // Forecast chart: native Open-Meteo q15 PV (pv_forecast_q15), no hourly interpolation.
@@ -4499,24 +4807,29 @@ function renderForecast() {
   if (pvTotalEl) pvTotalEl.textContent = fmtChartKwh(forecastChartTotalKwh(day, 'pv'));
   if (loadTotalEl) loadTotalEl.textContent = fmtChartKwh(forecastChartTotalKwh(day, 'load'));
 
+  const extraRows = extra?.past
+    ? { today_date: chartDate, history_rows: extra.history_rows || [], rows: [] }
+    : null;
   let pvActualKw = null;
   let loadActualKw = null;
-  if (past) {
-    pvActualKw = past.pvActual;
-    loadActualKw = past.loadActual;
+  if (extraRows) {
+    pvActualKw = q15ToChartKw(eaRowsQ15Field(extraRows, 'production') || [], false);
+    loadActualKw = q15ToChartKw(eaRowsQ15Field(extraRows, 'consumption') || [], false);
   } else if (isToday) {
     pvActualKw = actualPvQ15ToKw(forecastData, day);
     loadActualKw = actualLoadQ15ToKw(forecastData);
   }
 
-  const planSocQ15 = past ? past.planSoc : (simData?.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
-    ? simData.plan_soc_q15[currentForecastDay]
-    : null) || (forecastData.plan_soc_q15?.[currentForecastDay]?.some(v => v != null)
-    ? forecastData.plan_soc_q15[currentForecastDay]
+  const planSocQ15 = extra?.past
+    ? (extra.plan_soc_q15 || [])
+    : (simData?.plan_soc_q15?.[dayKey]?.some(v => v != null)
+    ? simData.plan_soc_q15[dayKey]
+    : null) || (forecastData.plan_soc_q15?.[dayKey]?.some(v => v != null)
+    ? forecastData.plan_soc_q15[dayKey]
     : null) || [];
 
-  // Actual SOC from EA rows (today only) — dashed; plan is solid optimizer trajectory.
-  let actualSocQ15 = past ? past.socActual : [];
+  // Actual SOC from EA rows (today and stored past days) — dashed; plan is solid.
+  let actualSocQ15 = extraRows ? (eaRowsQ15Field(extraRows, 'soc') || []) : [];
   if (isToday) {
     actualSocQ15 = (simData?.actual_soc_q15?.today?.some(v => v != null)
       ? simData.actual_soc_q15.today
@@ -4588,9 +4901,7 @@ function renderForecast() {
 
   const fcWrap = document.getElementById('fc-chart-wrap');
   const fcTip = document.getElementById('fc-chart-tooltip');
-  const fcDate = past ? past.date : isToday
-    ? new Date().toISOString().slice(0, 10)
-    : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const fcDate = chartDate;
   bindDashChartHover(fcAEl, fcTip, fcWrap, (slot) => {
     const hidden = window._fcLegendHidden;
     const show = (key) => !hidden || !hidden.has(key);
@@ -4618,16 +4929,28 @@ async function refreshPowerManagementPlan() {
   const btn = document.getElementById('pm-refresh');
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Refreshing…';
+    btn.classList.add('is-busy');
   }
   try {
-    if (!simViewIsToday()) {
-      const date = document.getElementById('sim-date')?.value;
-      const res = await fetch('api/forecast/recompute-pv?date=' + encodeURIComponent(date), { method: 'POST' });
+    const chartDate = fcChartDate();
+    if (chartDate < DEBUG_TODAY) {
+      const res = await fetch('api/forecast/recompute-pv?date=' + encodeURIComponent(chartDate), { method: 'POST' });
       const body = await res.json();
-      if (body?.ok) pastPvRecalc = { date, q15: body.pv_forecast_q15, unshaded: body.pv_unshaded_q15 };
-      else console.warn('past-day PV recompute', body?.error);
+      if (body?.ok && fcExtraDay?.date === chartDate) {
+        fcExtraDay.pv_forecast_q15 = body.pv_forecast_q15;
+        if (body.pv_unshaded_q15) fcExtraDay.pv_unshaded_q15 = body.pv_unshaded_q15;
+      } else if (!body?.ok) console.warn('past-day PV recompute', body?.error);
       renderForecast();
+      return;
+    }
+    if (fcChartDayKey(chartDate) === 'tomorrow') {
+      await loadForecast(true);
+      renderForecast();
+      return;
+    }
+    if (!fcChartDayKey(chartDate)) {
+      fcExtraDay = null;
+      await loadFcExtraDay(chartDate);
       return;
     }
     if (evSaveTimer) {
@@ -4652,7 +4975,7 @@ async function refreshPowerManagementPlan() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Refresh';
+      btn.classList.remove('is-busy');
     }
   }
 }
@@ -6981,9 +7304,9 @@ function bindAcrChartLegend() {
 function getFcChartLegendItems() {
   return [
     { key: 'pv-unshaded', label: 'PV no shading', swatch: acrLegendSwatch('rgba(251,191,36,0.35)') },
-    { key: 'pv-forecast', label: 'PV forecast', swatch: acrLegendLineSwatch('#f59e0b', false) },
+    { key: 'pv-forecast', label: 'PV', swatch: acrLegendLineSwatch('#f59e0b', false) },
     { key: 'pv-actual', label: 'PV actual', swatch: acrLegendLineSwatch('#fbbf24', true) },
-    { key: 'load-forecast', label: 'Consumption forecast', swatch: acrLegendLineSwatch('#60a5fa', false) },
+    { key: 'load-forecast', label: 'Consumption', swatch: acrLegendLineSwatch('#60a5fa', false) },
     { key: 'load-actual', label: 'Consumption actual', swatch: acrLegendLineSwatch('#93c5fd', true) },
     { key: 'soc-plan', label: 'SOC plan', swatch: acrLegendLineSwatch('#a855f7', false) },
     { key: 'soc-actual', label: 'SOC', swatch: acrLegendLineSwatch('#c084fc', true) },
@@ -7105,9 +7428,30 @@ function initAccrualsDate() {
   // Warsaw calendar day from server (matches Influx accruals), not UTC toISOString().
   el.value = DEBUG_TODAY;
   el.max = DEBUG_TODAY;
+  syncAccrualsDateButtons();
+}
+
+function syncAccrualsDateButtons() {
+  const el = document.getElementById('accruals-date');
+  syncDateStepperText(el);
+  syncDateStepperButtons(
+    document.getElementById('accruals-date-prev'),
+    document.getElementById('accruals-date-next'),
+    el?.value || DEBUG_TODAY, el?.min, el?.max,
+  );
+}
+
+function stepAccrualsDate(delta) {
+  const el = document.getElementById('accruals-date');
+  if (!el) return;
+  const next = stepDateValue(el.value, delta, el.min, el.max);
+  if (next === el.value) return;
+  el.value = next;
+  loadAccruals(next);
 }
 
 async function loadAccruals(date) {
+  syncAccrualsDateButtons();
   const dateStr = date || document.getElementById('accruals-date')?.value || DEBUG_TODAY;
   const url = dateStr ? `api/accruals?date=${encodeURIComponent(dateStr)}` : 'api/accruals';
   try {
@@ -7117,7 +7461,9 @@ async function loadAccruals(date) {
       fetch(url),
       monthFetch,
     ]);
-    accrualData = await accrRes.json();
+    const loaded = await accrRes.json();
+    if (dateStr !== (document.getElementById('accruals-date')?.value || DEBUG_TODAY)) return;
+    accrualData = loaded;
     renderAccrualsCards(accrualData);
     renderAccrualsChart(accrualData);
     refreshEnergyOverviewCosts(findHistoryMonthDayRow(monthData, dateStr));
@@ -8286,7 +8632,10 @@ function setSimEaPriceColsExpanded(expanded) {
   if (!table) return;
   table.classList.toggle('sim-ea-price-collapsed', !expanded);
   table.classList.toggle('sim-ea-price-expanded', expanded);
-  if (btn) btn.textContent = expanded ? 'Buy/Sell ▼' : 'Buy/Sell ▶';
+  if (btn) {
+    btn.classList.toggle('is-open', expanded);
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
   try { sessionStorage.setItem(SIM_PRICE_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
   table.style.removeProperty('--sim-table-font-size');
   table.style.removeProperty('--sim-table-pad-x');
@@ -8307,17 +8656,25 @@ function initSimEaPriceCols() {
 
 const HISTORY_MONTH_IMPORT_COLS_KEY = 'sa_history_month_import_cols_expanded';
 
+/** Monthly history table that owns the Details/Dis column groups (Debug tab). */
+function historyMonthFullTable() {
+  return document.querySelector('[data-mh-full] .sim-table-month');
+}
+
 function historyMonthImportColsExpanded() {
-  const table = document.querySelector('.sim-table-month');
+  const table = historyMonthFullTable();
   return table != null && !table.classList.contains('sim-month-import-collapsed');
 }
 
 function setHistoryMonthImportColsExpanded(expanded) {
-  const table = document.querySelector('.sim-table-month');
+  const table = historyMonthFullTable();
   const btn = document.getElementById('history-month-import-cols-toggle');
   if (!table) return;
   table.classList.toggle('sim-month-import-collapsed', !expanded);
-  if (btn) btn.textContent = expanded ? 'Details ▼' : 'Details ▶';
+  if (btn) {
+    btn.classList.toggle('is-open', expanded);
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
   try { sessionStorage.setItem(HISTORY_MONTH_IMPORT_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
   table.style.removeProperty('--sim-table-font-size');
   table.style.removeProperty('--sim-table-pad-x');
@@ -8346,16 +8703,19 @@ function bindHistoryMonthImportColsToggle() {
 const HISTORY_MONTH_DIS_COLS_KEY = 'sa_history_month_dis_cols_expanded';
 
 function historyMonthDisColsExpanded() {
-  const table = document.querySelector('.sim-table-month');
+  const table = historyMonthFullTable();
   return table != null && !table.classList.contains('sim-month-dis-collapsed');
 }
 
 function setHistoryMonthDisColsExpanded(expanded) {
-  const table = document.querySelector('.sim-table-month');
+  const table = historyMonthFullTable();
   const btn = document.getElementById('history-month-dis-cols-toggle');
   if (!table) return;
   table.classList.toggle('sim-month-dis-collapsed', !expanded);
-  if (btn) btn.textContent = expanded ? 'Dis ▼' : 'Dis ▶';
+  if (btn) {
+    btn.classList.toggle('is-open', expanded);
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
   try { sessionStorage.setItem(HISTORY_MONTH_DIS_COLS_KEY, expanded ? '1' : '0'); } catch (_) {}
   table.style.removeProperty('--sim-table-font-size');
   table.style.removeProperty('--sim-table-pad-x');
@@ -8769,7 +9129,7 @@ function historyMonthSavingsTitle(r) {
   return 'Actual energy net minus baseline energy net';
 }
 
-function makeHistoryMonthRow(r, isTotal) {
+function makeHistoryMonthRow(r, isTotal, full) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-gray-200 ' + (isTotal ? 'bg-gray-100 font-semibold' : 'hover:bg-gray-50');
   const exportVal = historyMonthExportDisplayValue(r, isTotal);
@@ -8836,14 +9196,32 @@ function makeHistoryMonthRow(r, isTotal) {
     <td class="text-right tabular-nums mh-bg-import-tariff mh-col-dis-baseline ${disImpCls}" title="${disImpTitle}">${simCashFmt(disImpVal)}</td>
     <td class="text-right tabular-nums mh-bg-energy-total mh-col-dis-baseline ${disCostCls}" title="${disCostTitle}">${simCashFmt(disCostVal)}</td>
     <td class="text-right tabular-nums mh-bg-import-total mh-col-dis-baseline ${disSavingsCls}" title="${disSavingsTitle}">${simCashFmt(disSavingsVal)}</td>`;
+  if (!full) {
+    tr.querySelectorAll('.mh-col-import-detail, .mh-col-dis-baseline').forEach((cell) => cell.remove());
+  }
   return tr;
 }
 
+function historyMonthRoots() {
+  return [...document.querySelectorAll('[data-mh-root]')];
+}
+
+function historyMonthRoot(el) {
+  return el.closest('[data-mh-root]');
+}
+
+function historyMonthPart(root, key) {
+  return root.querySelector(`[data-mh="${key}"]`);
+}
+
+function historyDepositTotalButtons() {
+  return [...document.querySelectorAll('[data-mh="deposit-total"]')];
+}
+
 function updateHistoryDepositTotal(value) {
-  const depEl = document.getElementById('history-deposit-total');
-  if (!depEl) return;
   const dep = Number(value);
-  depEl.textContent = Number.isFinite(dep) ? fmt(dep, 2) + ' PLN' : '— PLN';
+  const text = Number.isFinite(dep) ? fmt(dep, 2) + ' PLN' : '— PLN';
+  historyDepositTotalButtons().forEach((el) => { el.textContent = text; });
 }
 
 let _historyDepositMonths = [];
@@ -8943,11 +9321,20 @@ function initHistoryDepositChart() {
   /* Modal HTML is after the boot script; bind on first open. */
 }
 
-function renderHistoryMonthTable(data) {
-  const bodyDays = document.getElementById('history-month-body-days');
-  const bodyTotal = document.getElementById('history-month-body-total');
-  const toggleEl = document.getElementById('history-month-toggle');
-  const btn = document.getElementById('history-month-btn');
+function historyMonthColspan(root) {
+  return root.querySelectorAll('thead th').length;
+}
+
+function historyMonthMessageRow(root, cls, text) {
+  const bodyTotal = historyMonthPart(root, 'body-total');
+  bodyTotal.innerHTML = `<tr><td colspan="${historyMonthColspan(root)}" class="px-3 py-6 text-center ${cls}">${text}</td></tr>`;
+}
+
+function renderHistoryMonthTable(root, data) {
+  const bodyDays = historyMonthPart(root, 'body-days');
+  const bodyTotal = historyMonthPart(root, 'body-total');
+  const toggleEl = historyMonthPart(root, 'toggle');
+  const btn = historyMonthPart(root, 'days-btn');
   if (!bodyDays || !bodyTotal) return;
 
   bodyDays.innerHTML = '';
@@ -8960,29 +9347,31 @@ function renderHistoryMonthTable(data) {
   }
 
   if (data.error) {
-    bodyTotal.innerHTML = `<tr><td colspan="21" class="px-3 py-6 text-center text-red-500">${String(data.error)}</td></tr>`;
+    historyMonthMessageRow(root, 'text-red-500', String(data.error));
     return;
   }
   if (!data.rows || !data.rows.length) {
-    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">No history for this month.</td></tr>';
+    historyMonthMessageRow(root, 'text-gray-500', 'No history for this month.');
     return;
   }
 
+  const full = root.dataset.mhFull === '1';
   const dayRows = [...data.rows].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  dayRows.forEach(r => bodyDays.appendChild(makeHistoryMonthRow(r, false)));
+  dayRows.forEach(r => bodyDays.appendChild(makeHistoryMonthRow(r, false, full)));
   if (data.totals) {
     bodyTotal.appendChild(makeHistoryMonthRow(
       { ...data.totals, start: historyMonthTotalLabel(data.month) },
       true,
+      full,
     ));
   }
   if (toggleEl) toggleEl.classList.remove('hidden');
   fitSimHistoryTables();
 }
 
-function toggleHistoryMonthDays() {
-  const bodyDays = document.getElementById('history-month-body-days');
-  const btn = document.getElementById('history-month-btn');
+function toggleHistoryMonthDays(root) {
+  const bodyDays = historyMonthPart(root, 'body-days');
+  const btn = historyMonthPart(root, 'days-btn');
   if (!bodyDays || !btn) return;
   const hidden = bodyDays.classList.toggle('hidden');
   const label = btn.dataset.label || btn.textContent.replace(/ [▼▲]$/, '');
@@ -9055,30 +9444,33 @@ async function fetchHistoryMonthCached(month) {
 }
 
 async function rebuildHistoryFromSqlite() {
-  const btn = document.getElementById('history-deposit-total');
-  if (btn?.disabled) return;
-  const prevText = btn?.textContent;
-  if (btn) {
+  const btns = historyDepositTotalButtons();
+  if (btns.some((btn) => btn.disabled)) return;
+  const prevText = btns[0]?.textContent;
+  btns.forEach((btn) => {
     btn.disabled = true;
     btn.textContent = '…';
-  }
+  });
+  const restoreText = () => {
+    if (prevText) btns.forEach((btn) => { btn.textContent = prevText; });
+  };
   try {
     const res = await fetch('api/history-rebuild', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) {
       alert(data.error || 'Rebuild failed');
-      if (btn && prevText) btn.textContent = prevText;
+      restoreText();
       return;
     }
     try { localStorage.removeItem(HISTORY_MONTH_CACHE_KEY); } catch (_) {}
     updateHistoryDepositTotal(data.deposit_total);
     await loadHistoryDepositTotal();
-    await loadHistoryMonth();
+    await Promise.all(historyMonthRoots().map(loadHistoryMonth));
   } catch (_) {
     alert('Rebuild failed');
-    if (btn && prevText) btn.textContent = prevText;
+    restoreText();
   } finally {
-    if (btn) btn.disabled = false;
+    btns.forEach((btn) => { btn.disabled = false; });
   }
 }
 
@@ -9086,42 +9478,68 @@ function findHistoryMonthDayRow(data, dateStr) {
   return (data.rows || []).find(r => r.date === dateStr) || null;
 }
 
-function initHistoryMonth() {
-  const picker = document.getElementById('history-month-picker');
-  if (!picker) return;
-  const currentMonth = DEBUG_TODAY.slice(0, 7);
-  if (!picker.value) picker.value = currentMonth;
-  void loadHistoryDepositTotal();
-  loadHistoryMonth();
+function formatMonthEn(ym) {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  if (!y || !m) return '—';
+  return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 }
 
-async function loadHistoryMonth() {
-  const picker = document.getElementById('history-month-picker');
-  const bodyTotal = document.getElementById('history-month-body-total');
+function syncHistoryMonthLabel(root) {
+  const picker = historyMonthPart(root, 'picker');
+  const text = historyMonthPart(root, 'text');
+  if (text) text.textContent = formatMonthEn(picker?.value);
+}
+
+function stepHistoryMonth(root, delta) {
+  const picker = historyMonthPart(root, 'picker');
+  if (!picker?.value) return;
+  const [y, m] = picker.value.split('-').map(Number);
+  const dt = new Date(y, m - 1 + delta, 1);
+  const p = (n) => String(n).padStart(2, '0');
+  picker.value = `${dt.getFullYear()}-${p(dt.getMonth() + 1)}`;
+  loadHistoryMonth(root);
+}
+
+function initHistoryMonth() {
+  const roots = historyMonthRoots();
+  if (!roots.length) return;
+  const currentMonth = DEBUG_TODAY.slice(0, 7);
+  void loadHistoryDepositTotal();
+  roots.forEach((root) => {
+    const picker = historyMonthPart(root, 'picker');
+    if (!picker.value) picker.value = currentMonth;
+    loadHistoryMonth(root);
+  });
+}
+
+async function loadHistoryMonth(root) {
+  const picker = historyMonthPart(root, 'picker');
+  const bodyTotal = historyMonthPart(root, 'body-total');
   if (!picker || !bodyTotal) return;
   const month = picker.value;
+  syncHistoryMonthLabel(root);
   if (!month) {
-    const bodyDays = document.getElementById('history-month-body-days');
-    const toggleEl = document.getElementById('history-month-toggle');
+    const bodyDays = historyMonthPart(root, 'body-days');
+    const toggleEl = historyMonthPart(root, 'toggle');
     if (bodyDays) {
       bodyDays.innerHTML = '';
       bodyDays.classList.add('hidden');
     }
     if (toggleEl) toggleEl.classList.add('hidden');
-    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-500">Select a month to load daily totals.</td></tr>';
+    historyMonthMessageRow(root, 'text-gray-500', 'Select a month to load daily totals.');
     return;
   }
   const cached = getCachedHistoryMonth(month);
   if (cached) {
-    renderHistoryMonthTable(cached);
+    renderHistoryMonthTable(root, cached);
     return;
   }
-  bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-gray-600">Loading…</td></tr>';
+  historyMonthMessageRow(root, 'text-gray-600', 'Loading…');
   try {
     const data = await fetchHistoryMonthCached(month);
-    renderHistoryMonthTable(data);
+    renderHistoryMonthTable(root, data);
   } catch (e) {
-    bodyTotal.innerHTML = '<tr><td colspan="21" class="px-3 py-6 text-center text-red-500">Failed to load month.</td></tr>';
+    historyMonthMessageRow(root, 'text-red-500', 'Failed to load month.');
   }
 }
 

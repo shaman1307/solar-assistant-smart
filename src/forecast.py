@@ -50,6 +50,93 @@ PV_SCALE_MAX = 2.0
 # Public API
 # ---------------------------------------------------------------------------
 
+# Days after today the chart can draw. The nearest weekday load sample is 7 days
+# back, so day +6 still uses yesterday, which already has a full load record.
+FUTURE_CHART_DAYS = 6
+
+
+def forecast_chart_bounds(now: datetime | None = None) -> dict[str, str]:
+    """Earliest stored forecast day through today + 6."""
+    now = now or now_warsaw()
+    today = now.date()
+    today_str = today.strftime("%Y-%m-%d")
+    from .sqlite_store import list_plan_day_archives
+
+    archived = list_plan_day_archives(limit=None)
+    min_date = min(archived) if archived else today_str
+    if min_date > today_str:
+        min_date = today_str
+    max_date = (today + timedelta(days=FUTURE_CHART_DAYS)).strftime("%Y-%m-%d")
+    return {"min_date": min_date, "max_date": max_date, "today": today_str}
+
+
+def build_forecast_chart_day(cfg: dict, date_str: str) -> dict[str, Any]:
+    """One Power Management day. Past days are the stored snapshot.
+
+    Today and tomorrow stay on the live cache. Later days use the same PV
+    fetch and weekday load average, and are not written into that cache.
+    """
+    bounds = forecast_chart_bounds()
+    if date_str < bounds["min_date"] or date_str > bounds["max_date"]:
+        raise ValueError("date outside forecast chart range")
+    today = bounds["today"]
+    if date_str < today:
+        return _chart_day_from_archive(cfg, date_str)
+    tomorrow = (
+        datetime.strptime(today, "%Y-%m-%d").date() + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+    if date_str in (today, tomorrow):
+        return _chart_day_from_live_cache(date_str)
+    return _chart_day_computed(cfg, date_str)
+
+
+def _chart_day_from_archive(cfg: dict, date_str: str) -> dict[str, Any]:
+    from .sqlite_store import load_plan_day_archive
+
+    archived = load_plan_day_archive(date_str) or {}
+    forecast = archived.get("forecast") or {}
+    radiation = forecast.get("pv_radiation")
+    unshaded = unshaded_pv_q15(cfg, date_str, radiation) if radiation else None
+    if unshaded is None:
+        unshaded = forecast.get("pv_unshaded_q15")
+    return {
+        "date": date_str,
+        "past": True,
+        "pv_forecast_q15": list(forecast.get("pv_q15") or []),
+        "pv_unshaded_q15": unshaded,
+        "load_q15": list(forecast.get("load_q15") or []),
+        "plan_soc_q15": list((archived.get("plan_soc_q15") or {}).get("today") or []),
+        "history_rows": list(archived.get("history_rows") or []),
+    }
+
+
+def _chart_day_from_live_cache(date_str: str) -> dict[str, Any]:
+    snap = fc.day_forecast_snapshot(date_str) or {}
+    return {
+        "date": date_str,
+        "past": False,
+        "pv_forecast_q15": list(snap.get("pv_q15") or []),
+        "pv_unshaded_q15": None,
+        "load_q15": list(snap.get("load_q15") or []),
+        "plan_soc_q15": [],
+        "history_rows": [],
+    }
+
+
+def _chart_day_computed(cfg: dict, date_str: str) -> dict[str, Any]:
+    _pv_h, pv_q, radiation = fc.compute_pv_profiles_for_date(date_str, cfg)
+    load_q, _load_h = fc.compute_weekday_load_profile(date_str, cfg)
+    return {
+        "date": date_str,
+        "past": False,
+        "pv_forecast_q15": list(pv_q),
+        "pv_unshaded_q15": unshaded_pv_q15(cfg, date_str, radiation),
+        "load_q15": list(load_q),
+        "plan_soc_q15": [],
+        "history_rows": [],
+    }
+
+
 async def get_forecast(
     cfg: dict,
     *,
@@ -675,6 +762,8 @@ def _assemble_forecast(
             "pv_om_resolution": "15min",
         },
         "ev_charging": ev_payload,
+        "chart_min_date": forecast_chart_bounds()["min_date"],
+        "chart_max_date": forecast_chart_bounds()["max_date"],
     }
     return result
 
